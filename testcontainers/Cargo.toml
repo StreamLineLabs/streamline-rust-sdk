@@ -1,0 +1,33 @@
+[package]
+name = "streamline-testcontainers"
+version = "0.2.0"
+edition = "2021"
+authors = ["Streamline Team"]
+description = "Testcontainers module for Streamline - The Redis of Streaming"
+license = "Apache-2.0"
+repository = "https://github.com/streamlinelabs/streamline-rust-sdk"
+documentation = "https://docs.rs/streamline-testcontainers"
+keywords = ["streamline", "kafka", "testcontainers", "testing", "docker"]
+categories = ["development-tools::testing"]
+
+[features]
+default = []
+## Re-export the streamline-client crate for convenience in tests.
+client = ["dep:streamline-client"]
+
+[dependencies]
+# Testcontainers core
+testcontainers = "0.23"
+
+# Async runtime
+tokio = { version = "1.35", features = ["time"] }
+
+# Error handling
+thiserror = "1.0"
+
+# Optional: main SDK crate
+streamline-client = { path = "..", optional = true }
+
+[dev-dependencies]
+tokio = { version = "1.35", features = ["full"] }
+testcontainers = "0.23"
