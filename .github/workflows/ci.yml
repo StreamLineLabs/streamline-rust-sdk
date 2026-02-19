@@ -1,0 +1,72 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+env:
+  CARGO_TERM_COLOR: always
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
+      - name: Install tarpaulin
+        run: cargo install cargo-tarpaulin --locked
+      - name: Generate coverage
+        run: cargo tarpaulin --out xml --skip-clean
+      - name: Upload coverage
+        uses: codecov/codecov-action@v4
+        with:
+          files: cobertura.xml
+          fail_ci_if_error: false
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+
+  integration-test:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    needs: [check]
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Start Streamline server
+        run: docker compose -f docker-compose.test.yml up -d
+      - name: Wait for Streamline to be healthy
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:9094/health; then
+              echo " Streamline is healthy"
+              exit 0
+            fi
+            echo "Waiting for Streamline... ($i/30)"
+            sleep 2
+          done
+          echo "Streamline failed to start"
+          docker compose -f docker-compose.test.yml logs
+          exit 1
+      - name: Run integration tests
+        run: cargo test --features integration -v
+        env:
+          STREAMLINE_BOOTSTRAP_SERVERS: localhost:9092
+      - name: Tear down Streamline
+        if: always()
+        run: docker compose -f docker-compose.test.yml down
+
+  security-audit:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo install cargo-audit --locked
+      - run: cargo audit
