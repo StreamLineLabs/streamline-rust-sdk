@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/streamlinelabs/streamline-rust-sdk/actions/workflows/ci.yml/badge.svg)](https://github.com/streamlinelabs/streamline-rust-sdk/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
-[![Rust](https://img.shields.io/badge/Rust-1.75%2B-orange.svg)](https://www.rust-lang.org/)
+[![Rust](https://img.shields.io/badge/Rust-1.80%2B-orange.svg)](https://www.rust-lang.org/)
 [![Docs](https://img.shields.io/badge/docs-streamlinelabs.dev-blue.svg)](https://streamlinelabs.dev/docs/sdks/rust)
 
 Native Rust client library for Streamline streaming platform.
