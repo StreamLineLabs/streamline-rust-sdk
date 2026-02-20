@@ -66,3 +66,7 @@ path = "examples/producer.rs"
 [[example]]
 name = "consumer"
 path = "examples/consumer.rs"
+
+[lints.clippy]
+unwrap_used = "warn"
+expect_used = "warn"
