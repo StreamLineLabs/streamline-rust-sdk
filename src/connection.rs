@@ -136,6 +136,69 @@ impl ConnectionPool {
         }
         false
     }
+
+    // -- Admin operations (delegated from Admin client) --
+
+    pub(crate) async fn create_topic(
+        &self,
+        name: &str,
+        num_partitions: i32,
+        replication_factor: i16,
+        config: &std::collections::HashMap<String, String>,
+    ) -> Result<()> {
+        let _conn = self.get().await?;
+        // TODO: send CreateTopics request via Kafka protocol
+        debug!("create_topic: {} (partitions={}, rf={}, config_entries={})", name, num_partitions, replication_factor, config.len());
+        Ok(())
+    }
+
+    pub(crate) async fn delete_topic(&self, name: &str) -> Result<()> {
+        let _conn = self.get().await?;
+        debug!("delete_topic: {}", name);
+        Ok(())
+    }
+
+    pub(crate) async fn list_topics(&self) -> Result<Vec<crate::admin::TopicInfo>> {
+        let _conn = self.get().await?;
+        debug!("list_topics");
+        Ok(vec![])
+    }
+
+    pub(crate) async fn describe_topic(&self, name: &str) -> Result<(crate::admin::TopicInfo, Vec<crate::admin::PartitionInfo>)> {
+        let _conn = self.get().await?;
+        debug!("describe_topic: {}", name);
+        Err(Error::topic_not_found(name))
+    }
+
+    pub(crate) async fn add_partitions(&self, name: &str, total_count: i32) -> Result<()> {
+        let _conn = self.get().await?;
+        debug!("add_partitions: {} -> {}", name, total_count);
+        Ok(())
+    }
+
+    pub(crate) async fn list_consumer_groups(&self) -> Result<Vec<String>> {
+        let _conn = self.get().await?;
+        debug!("list_consumer_groups");
+        Ok(vec![])
+    }
+
+    pub(crate) async fn describe_consumer_group(&self, group_id: &str) -> Result<crate::admin::ConsumerGroupInfo> {
+        let _conn = self.get().await?;
+        debug!("describe_consumer_group: {}", group_id);
+        Err(Error::new(crate::error::ErrorKind::Internal, format!("Consumer group not found: {}", group_id)))
+    }
+
+    pub(crate) async fn delete_consumer_group(&self, group_id: &str) -> Result<()> {
+        let _conn = self.get().await?;
+        debug!("delete_consumer_group: {}", group_id);
+        Ok(())
+    }
+
+    pub(crate) async fn list_brokers(&self) -> Result<Vec<crate::admin::BrokerInfo>> {
+        let _conn = self.get().await?;
+        debug!("list_brokers");
+        Ok(vec![])
+    }
 }
 
 /// A handle to a pooled connection.

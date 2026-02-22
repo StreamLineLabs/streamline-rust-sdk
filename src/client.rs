@@ -1,5 +1,6 @@
 //! Main Streamline client.
 
+use crate::admin::Admin;
 use crate::config::{ConsumerConfig, ProducerConfig, StreamlineConfig};
 use crate::connection::ConnectionPool;
 use crate::consumer::Consumer;
@@ -90,6 +91,11 @@ impl Streamline {
     /// Returns a reference to the connection pool.
     pub fn pool(&self) -> &ConnectionPool {
         &self.pool
+    }
+
+    /// Creates an admin client for cluster management operations.
+    pub fn admin(&self) -> Admin {
+        Admin::new(self.config.clone(), self.pool.clone())
     }
 }
 
