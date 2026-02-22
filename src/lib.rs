@@ -28,6 +28,7 @@ mod connection;
 mod consumer;
 mod error;
 mod producer;
+pub mod admin;
 pub mod telemetry;
 
 pub use client::Streamline;
@@ -36,6 +37,7 @@ pub use connection::ConnectionPool;
 pub use consumer::{Consumer, ConsumerRecord};
 pub use error::{Error, ErrorKind, Result};
 pub use producer::{Producer, ProducerRecord, RecordMetadata};
+pub use admin::{Admin, TopicConfig, TopicInfo, PartitionInfo, BrokerInfo, ConsumerGroupInfo};
 
 /// Message headers.
 pub mod headers {
