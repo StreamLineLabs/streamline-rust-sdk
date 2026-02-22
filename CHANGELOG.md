@@ -1,6 +1,7 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+- test: add integration tests for producer acknowledgments (2026-02-22)
 - fix: correct timeout handling in connection pool (2026-02-22)
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
