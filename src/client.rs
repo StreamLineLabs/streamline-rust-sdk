@@ -60,12 +60,12 @@ impl Streamline {
     }
 
     /// Creates a producer with default configuration.
-    pub fn producer<K, V>(&self) -> Producer<K, V> {
+    pub fn producer<K: AsRef<[u8]> + Send, V: AsRef<[u8]> + Send>(&self) -> Producer<K, V> {
         self.producer_with_config(ProducerConfig::default())
     }
 
     /// Creates a producer with custom configuration.
-    pub fn producer_with_config<K, V>(&self, config: ProducerConfig) -> Producer<K, V> {
+    pub fn producer_with_config<K: AsRef<[u8]> + Send, V: AsRef<[u8]> + Send>(&self, config: ProducerConfig) -> Producer<K, V> {
         Producer::new(self.config.clone(), self.pool.clone(), config)
     }
 

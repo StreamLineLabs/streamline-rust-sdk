@@ -6,7 +6,7 @@ use streamline_client::Streamline;
 async fn main() -> Result<(), streamline_client::Error> {
     // Create a client
     let client = Streamline::builder()
-        .bootstrap_servers("localhost:9092")
+        .bootstrap_servers(&std::env::var("STREAMLINE_BOOTSTRAP_SERVERS").unwrap_or_else(|_| "localhost:9092".into()))
         .build()
         .await?;
 
