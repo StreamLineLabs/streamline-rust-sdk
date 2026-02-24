@@ -6,6 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+- **Changed**: extract protocol codec into separate module
 - **Testing**: add integration tests for TLS connections
 - **Fixed**: resolve lifetime issue in consumer iterator
 - **Added**: add async producer with tokio runtime
