@@ -18,7 +18,8 @@ pub struct StreamlineConfig {
 impl Default for StreamlineConfig {
     fn default() -> Self {
         Self {
-            bootstrap_servers: "localhost:9092".to_string(),
+            bootstrap_servers: std::env::var("STREAMLINE_BOOTSTRAP_SERVERS")
+                .unwrap_or_else(|_| "localhost:9092".to_string()),
             connection_pool_size: 4,
             connect_timeout: Duration::from_secs(30),
             request_timeout: Duration::from_secs(30),
