@@ -3,7 +3,7 @@
 version: "3.8"
 services:
   streamline:
-    image: ghcr.io/streamlinelabs/streamline:latest
+    image: ghcr.io/streamlinelabs/streamline:0.2.0
     ports:
       - "9092:9092"
       - "9094:9094"
