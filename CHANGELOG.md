@@ -45,3 +45,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Tokio async runtime with full feature support
 - Type-safe generic producer and consumer
 - Apache 2.0 license
+
