@@ -29,3 +29,5 @@ jobs:
           generate_release_notes: true
           files: |
             sbom.cdx.json
+
+# Version validation enabled
