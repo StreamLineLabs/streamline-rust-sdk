@@ -294,3 +294,5 @@ mod tests {
         assert_eq!(idx, 7 % 3);
     }
 }
+
+// add TLS configuration support for producer
