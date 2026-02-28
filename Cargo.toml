@@ -1,5 +1,6 @@
 [package]
-# Release workflow configured for automated publishingname = "streamline-client"
+# Release workflow configured for automated publishing
+name = "streamline-client"
 version = "0.2.0"
 edition = "2021"
 authors = ["Streamline Team"]
