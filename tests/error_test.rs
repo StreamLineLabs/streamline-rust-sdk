@@ -194,3 +194,4 @@ fn test_invalid_configuration_error() {
     assert_eq!(err.kind, ErrorKind::InvalidConfiguration);
     assert!(err.message.contains("bootstrap_servers"));
 }
+
