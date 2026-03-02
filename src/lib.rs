@@ -32,7 +32,9 @@ pub mod admin;
 pub mod telemetry;
 
 pub use client::Streamline;
-pub use config::{StreamlineConfig, ConsumerConfig, ProducerConfig};
+pub use config::{StreamlineConfig, ConsumerConfig, ProducerConfig, TlsConfig, SaslConfig, SaslMechanism, SecurityProtocol};
+pub mod schema;
+pub mod query;
 pub use connection::ConnectionPool;
 pub use consumer::{Consumer, ConsumerRecord};
 pub use error::{Error, ErrorKind, Result};

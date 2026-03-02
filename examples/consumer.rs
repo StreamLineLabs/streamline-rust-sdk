@@ -13,7 +13,7 @@ async fn main() -> Result<(), streamline_client::Error> {
 
     // Create a consumer with group ID
     let mut consumer = client
-        .consumer::<String, String>("my-topic")
+        .consumer::<Vec<u8>, Vec<u8>>("my-topic")
         .group_id("my-consumer-group")
         .auto_offset_reset("earliest")
         .max_poll_records(100)
@@ -35,7 +35,8 @@ async fn main() -> Result<(), streamline_client::Error> {
         for record in &records {
             println!(
                 "Received: topic={}, partition={}, offset={}, key={:?}",
-                record.topic, record.partition, record.offset, record.key
+                record.topic, record.partition, record.offset,
+                record.key.as_ref().map(|k| String::from_utf8_lossy(k))
             );
         }
 

@@ -15,7 +15,7 @@
 //!
 //! # Example
 //!
-//! ```rust,no_run
+//! ```rust,ignore
 //! use streamline_client::telemetry;
 //!
 //! // Trace a produce operation

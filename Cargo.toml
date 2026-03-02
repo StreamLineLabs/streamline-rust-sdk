@@ -6,7 +6,7 @@ edition = "2021"
 authors = ["Streamline Team"]
 description = "Native Rust client for Streamline streaming platform"
 license = "Apache-2.0"
-repository = "https://github.com/streamline-dev/streamline"
+repository = "https://github.com/streamlinelabs/streamline-rust-sdk"
 documentation = "https://docs.rs/streamline-client"
 keywords = ["streaming", "kafka", "messaging", "async"]
 categories = ["network-programming", "asynchronous"]
@@ -17,7 +17,8 @@ tokio-runtime = ["tokio/full"]
 compression-lz4 = ["lz4_flex"]
 compression-zstd = ["zstd"]
 compression-snappy = ["snap"]
-tls = ["tokio-rustls", "rustls-pemfile"]
+tls = ["tokio-rustls", "rustls-pemfile", "rustls"]
+sasl = ["sha2", "hmac", "pbkdf2", "base64"]
 telemetry = ["opentelemetry", "opentelemetry_sdk", "tracing-opentelemetry"]
 
 [dependencies]
@@ -46,6 +47,13 @@ snap = { version = "1.1", optional = true }
 # TLS (optional)
 tokio-rustls = { version = "0.25", optional = true }
 rustls-pemfile = { version = "2.0", optional = true }
+rustls = { version = "0.22", optional = true }
+
+# SASL (optional)
+sha2 = { version = "0.10", optional = true }
+hmac = { version = "0.12", optional = true }
+pbkdf2 = { version = "0.12", optional = true }
+base64 = { version = "0.22", optional = true }
 
 # Telemetry (optional)
 opentelemetry = { version = "0.22", optional = true }

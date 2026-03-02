@@ -13,6 +13,12 @@ pub struct StreamlineConfig {
     pub connect_timeout: Duration,
     /// Request timeout
     pub request_timeout: Duration,
+    /// Security protocol
+    pub security_protocol: SecurityProtocol,
+    /// TLS configuration (used when security_protocol is Ssl or SaslSsl)
+    pub tls: Option<TlsConfig>,
+    /// SASL configuration (used when security_protocol is SaslPlaintext or SaslSsl)
+    pub sasl: Option<SaslConfig>,
 }
 
 impl Default for StreamlineConfig {
@@ -23,6 +29,9 @@ impl Default for StreamlineConfig {
             connection_pool_size: 4,
             connect_timeout: Duration::from_secs(30),
             request_timeout: Duration::from_secs(30),
+            security_protocol: SecurityProtocol::default(),
+            tls: None,
+            sasl: None,
         }
     }
 }
@@ -93,6 +102,59 @@ impl Default for ConsumerConfig {
     }
 }
 
+/// TLS configuration for secure connections.
+#[derive(Debug, Clone)]
+pub struct TlsConfig {
+    /// Path to CA certificate file (PEM format)
+    pub ca_path: Option<String>,
+    /// Path to client certificate file (PEM format)
+    pub cert_path: Option<String>,
+    /// Path to client private key file (PEM format)
+    pub key_path: Option<String>,
+    /// Skip server certificate verification (NOT recommended for production)
+    pub danger_skip_verify: bool,
+}
+
+impl Default for TlsConfig {
+    fn default() -> Self {
+        Self {
+            ca_path: None,
+            cert_path: None,
+            key_path: None,
+            danger_skip_verify: false,
+        }
+    }
+}
+
+/// SASL mechanism for authentication.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SaslMechanism {
+    Plain,
+    ScramSha256,
+    ScramSha512,
+}
+
+/// SASL authentication configuration.
+#[derive(Debug, Clone)]
+pub struct SaslConfig {
+    /// SASL mechanism
+    pub mechanism: SaslMechanism,
+    /// Username
+    pub username: String,
+    /// Password
+    pub password: String,
+}
+
+/// Security protocol for connections.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub enum SecurityProtocol {
+    #[default]
+    Plaintext,
+    Ssl,
+    SaslPlaintext,
+    SaslSsl,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -104,6 +166,9 @@ mod tests {
         assert_eq!(config.connection_pool_size, 4);
         assert_eq!(config.connect_timeout, Duration::from_secs(30));
         assert_eq!(config.request_timeout, Duration::from_secs(30));
+        assert_eq!(config.security_protocol, SecurityProtocol::Plaintext);
+        assert!(config.tls.is_none());
+        assert!(config.sasl.is_none());
     }
 
     #[test]
@@ -138,5 +203,31 @@ mod tests {
         };
         let cloned = config.clone();
         assert_eq!(config.bootstrap_servers, cloned.bootstrap_servers);
+    }
+
+    #[test]
+    fn test_security_config() {
+        let config = StreamlineConfig {
+            security_protocol: SecurityProtocol::SaslSsl,
+            tls: Some(TlsConfig {
+                ca_path: Some("/path/to/ca.pem".to_string()),
+                cert_path: Some("/path/to/cert.pem".to_string()),
+                key_path: Some("/path/to/key.pem".to_string()),
+                danger_skip_verify: false,
+            }),
+            sasl: Some(SaslConfig {
+                mechanism: SaslMechanism::ScramSha256,
+                username: "admin".to_string(),
+                password: "secret".to_string(),
+            }),
+            ..Default::default()
+        };
+        assert_eq!(config.security_protocol, SecurityProtocol::SaslSsl);
+        let tls = config.tls.unwrap();
+        assert_eq!(tls.ca_path.as_deref(), Some("/path/to/ca.pem"));
+        assert!(!tls.danger_skip_verify);
+        let sasl = config.sasl.unwrap();
+        assert_eq!(sasl.mechanism, SaslMechanism::ScramSha256);
+        assert_eq!(sasl.username, "admin");
     }
 }

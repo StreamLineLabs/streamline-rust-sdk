@@ -1,7 +1,7 @@
 //! Main Streamline client.
 
 use crate::admin::Admin;
-use crate::config::{ConsumerConfig, ProducerConfig, StreamlineConfig};
+use crate::config::{ConsumerConfig, ProducerConfig, SecurityProtocol, StreamlineConfig};
 use crate::connection::ConnectionPool;
 use crate::consumer::Consumer;
 use crate::error::{Error, Result};
@@ -144,6 +144,9 @@ impl StreamlineBuilder {
             connection_pool_size: self.connection_pool_size.unwrap_or(4),
             connect_timeout: self.connect_timeout.unwrap_or(Duration::from_secs(30)),
             request_timeout: self.request_timeout.unwrap_or(Duration::from_secs(30)),
+            security_protocol: SecurityProtocol::default(),
+            tls: None,
+            sasl: None,
         };
 
         let config = Arc::new(config);

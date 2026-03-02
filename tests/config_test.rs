@@ -17,6 +17,7 @@ fn test_streamline_config_custom() {
         connection_pool_size: 8,
         connect_timeout: Duration::from_secs(10),
         request_timeout: Duration::from_secs(60),
+        ..Default::default()
     };
     assert_eq!(config.bootstrap_servers, "broker1:9092,broker2:9092");
     assert_eq!(config.connection_pool_size, 8);
