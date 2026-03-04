@@ -77,3 +77,4 @@ impl QueryClient {
         format!("{}/api/v1/query/explain", self.base_url)
     }
 }
+
