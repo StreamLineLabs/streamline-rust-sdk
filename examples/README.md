@@ -31,3 +31,4 @@ Set `STREAMLINE_BOOTSTRAP_SERVERS` to connect to a non-local server:
 export STREAMLINE_BOOTSTRAP_SERVERS=my-server:9092
 cargo run --example producer
 ```
+
