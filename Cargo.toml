@@ -12,7 +12,7 @@ keywords = ["streaming", "kafka", "messaging", "async"]
 categories = ["network-programming", "asynchronous"]
 
 [features]
-default = ["tokio-runtime"]
+default = ["tokio-runtime", "schema-registry"]
 tokio-runtime = ["tokio/full"]
 compression-lz4 = ["lz4_flex"]
 compression-zstd = ["zstd"]
@@ -20,6 +20,8 @@ compression-snappy = ["snap"]
 tls = ["tokio-rustls", "rustls-pemfile", "rustls"]
 sasl = ["sha2", "hmac", "pbkdf2", "base64"]
 telemetry = ["opentelemetry", "opentelemetry_sdk", "tracing-opentelemetry"]
+schema-registry = ["reqwest"]
+schema-registry-tls = ["schema-registry", "reqwest/rustls-tls"]
 
 [dependencies]
 # Async runtime
@@ -63,6 +65,9 @@ tracing-opentelemetry = { version = "0.23", optional = true }
 # Utils
 uuid = { version = "1.6", features = ["v4"] }
 dashmap = "5.5"
+
+# HTTP client (for Schema Registry)
+reqwest = { version = "0.12", features = ["json"], default-features = false, optional = true }
 
 [dev-dependencies]
 tokio-test = "0.4"

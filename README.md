@@ -11,11 +11,16 @@ Native Rust client library for Streamline streaming platform.
 ## Features
 
 - Async/await with Tokio
+- Admin client (topic management, consumer groups via HTTP REST API)
+- SQL query support
 - Connection pooling
-- Automatic reconnection
+- Automatic reconnection with exponential backoff
 - Producer and consumer APIs
-- Compression support (LZ4, Zstd, Snappy)
-- TLS support
+- Compression support (LZ4, Zstd, Snappy — feature-gated)
+- TLS/mTLS support (feature-gated via `tls`)
+- SASL authentication (PLAIN, SCRAM)
+- OpenTelemetry tracing (feature-gated via `telemetry`)
+- Builder pattern configuration
 
 ## Installation
 
@@ -315,6 +320,15 @@ cargo test
 | `consumer.position(partition).await` | Get current position |
 | `consumer.pause()` | Pause consuming |
 | `consumer.resume()` | Resume consuming |
+
+## Requirements
+
+- Rust 1.80 or later
+- Streamline server 0.2.0 or later
+
+## Contributing
+
+Contributions are welcome! Please see the [organization contributing guide](https://github.com/streamlinelabs/.github/blob/main/CONTRIBUTING.md) for guidelines.
 
 ## License
 
