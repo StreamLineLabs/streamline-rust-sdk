@@ -98,23 +98,82 @@ fn a06_auth_failure() {}
 
 // ========== SCHEMA REGISTRY (6 tests) ==========
 
-#[test]
-fn s01_register_schema() {}
+const SCHEMA_REGISTRY_URL: &str = "http://localhost:9094";
+const AVRO_SCHEMA: &str = r#"{"type":"record","name":"User","fields":[{"name":"id","type":"int"},{"name":"name","type":"string"}]}"#;
+const JSON_SCHEMA: &str = r#"{"type":"object","properties":{"id":{"type":"integer"},"name":{"type":"string"}},"required":["id","name"]}"#;
 
-#[test]
-fn s02_get_by_id() {}
+#[tokio::test]
+#[ignore] // Requires running Streamline server
+async fn s01_register_schema() {
+    let client = streamline_client::SchemaRegistryClient::new(SCHEMA_REGISTRY_URL);
+    let id = client
+        .register("test-s01-value", AVRO_SCHEMA, streamline_client::SchemaType::Avro)
+        .await
+        .expect("register schema");
+    assert!(id > 0, "expected positive schema ID");
+}
 
-#[test]
-fn s03_get_versions() {}
+#[tokio::test]
+#[ignore]
+async fn s02_get_by_id() {
+    let client = streamline_client::SchemaRegistryClient::new(SCHEMA_REGISTRY_URL);
+    let id = client
+        .register("test-s02-value", AVRO_SCHEMA, streamline_client::SchemaType::Avro)
+        .await
+        .expect("register");
+    let schema = client.get_schema(id).await.expect("get schema");
+    assert!(!schema.schema.is_empty(), "expected non-empty schema");
+}
 
-#[test]
-fn s04_compatibility_check() {}
+#[tokio::test]
+#[ignore]
+async fn s03_get_versions() {
+    let client = streamline_client::SchemaRegistryClient::new(SCHEMA_REGISTRY_URL);
+    client
+        .register("test-s03-value", AVRO_SCHEMA, streamline_client::SchemaType::Avro)
+        .await
+        .expect("register");
+    let versions = client.get_versions("test-s03-value").await.expect("get versions");
+    assert!(!versions.is_empty(), "expected at least one version");
+}
 
-#[test]
-fn s05_avro_schema() {}
+#[tokio::test]
+#[ignore]
+async fn s04_compatibility_check() {
+    let client = streamline_client::SchemaRegistryClient::new(SCHEMA_REGISTRY_URL);
+    client
+        .register("test-s04-value", AVRO_SCHEMA, streamline_client::SchemaType::Avro)
+        .await
+        .expect("register");
+    let _compatible = client
+        .check_compatibility("test-s04-value", AVRO_SCHEMA, streamline_client::SchemaType::Avro)
+        .await
+        .expect("compat check");
+}
 
-#[test]
-fn s06_json_schema() {}
+#[tokio::test]
+#[ignore]
+async fn s05_avro_schema() {
+    let client = streamline_client::SchemaRegistryClient::new(SCHEMA_REGISTRY_URL);
+    let id = client
+        .register("test-s05-avro", AVRO_SCHEMA, streamline_client::SchemaType::Avro)
+        .await
+        .expect("register avro");
+    let schema = client.get_schema(id).await.expect("get schema");
+    assert!(schema.schema.contains("record"), "expected Avro schema content");
+}
+
+#[tokio::test]
+#[ignore]
+async fn s06_json_schema() {
+    let client = streamline_client::SchemaRegistryClient::new(SCHEMA_REGISTRY_URL);
+    let id = client
+        .register("test-s06-json", JSON_SCHEMA, streamline_client::SchemaType::Json)
+        .await
+        .expect("register json");
+    let schema = client.get_schema(id).await.expect("get schema");
+    assert!(schema.schema.contains("object"), "expected JSON Schema content");
+}
 
 // ========== ADMIN (4 tests) ==========
 
