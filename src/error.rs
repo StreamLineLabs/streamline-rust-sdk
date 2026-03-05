@@ -14,6 +14,8 @@ pub enum ErrorKind {
     PartitionNotFound,
     /// Connection failed
     ConnectionFailed,
+    /// General connection error
+    Connection,
     /// Request timed out
     Timeout,
     /// Authentication failed
@@ -26,6 +28,8 @@ pub enum ErrorKind {
     Protocol,
     /// Serialization error
     Serialization,
+    /// Schema registry error
+    Schema,
     /// Internal error
     Internal,
 }
