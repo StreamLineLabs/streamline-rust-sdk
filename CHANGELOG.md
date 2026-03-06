@@ -1,20 +1,17 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
-- feat: add TLS configuration support for producer
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
-- fix: resolve tokio runtime panic on drop (2026-03-05)
-
-- refactor: simplify error type hierarchy (2026-03-06)
-
-- test: add integration tests for TLS connections (2026-03-06)
 ## [Unreleased]
 
-## [0.2.0] - 2026-02-28
+- feat: add TLS configuration support for producer
+- fix: resolve tokio runtime panic on drop (2026-03-05)
+- refactor: simplify error type hierarchy (2026-03-06)
+- test: add integration tests for TLS connections (2026-03-06)
 - **Changed**: update Cargo.toml dependency versions
 - **Changed**: extract protocol codec into separate module
 - **Testing**: add integration tests for TLS connections
@@ -23,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Correct timeout handling in connection pool
+
 
 ## [0.2.0] - 2026-02-18
 

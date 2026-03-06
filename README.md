@@ -326,6 +326,46 @@ cargo test
 - Rust 1.80 or later
 - Streamline server 0.2.0 or later
 
+## Configuration Reference
+
+### Client
+
+| Parameter | Default | Description |
+|---|---|---|
+| `bootstrap_servers` | `"localhost:9092"` | Comma-separated broker addresses |
+| `connection_pool_size` | `4` | Number of connections per broker |
+| `connect_timeout` | `10s` | Connection timeout (`Duration`) |
+| `request_timeout` | `30s` | Request timeout (`Duration`) |
+
+### Producer
+
+| Parameter | Default | Description |
+|---|---|---|
+| `batch_size` | `16384` | Maximum batch size in bytes |
+| `linger_ms` | `0` | Batch linger time in milliseconds |
+| `compression` | `None` | Compression: `None`, `Gzip`, `Snappy`, `Lz4`, `Zstd` |
+| `retries` | `3` | Retries on transient failures |
+| `acks` | `One` | Acknowledgment: `None`, `One`, `All` |
+| `idempotent` | `false` | Enable exactly-once semantics |
+
+### Consumer
+
+| Parameter | Default | Description |
+|---|---|---|
+| `group_id` | *(required)* | Consumer group identifier |
+| `auto_offset_reset` | `Latest` | Start position: `Earliest`, `Latest` |
+| `enable_auto_commit` | `true` | Automatically commit offsets |
+| `max_poll_records` | `500` | Maximum records per poll |
+| `session_timeout` | `30s` | Session timeout (`Duration`) |
+
+### TLS (feature: `tls`)
+
+| Parameter | Default | Description |
+|---|---|---|
+| `ca_cert_path` | — | Path to CA certificate (PEM) |
+| `client_cert_path` | — | Client certificate for mTLS (PEM) |
+| `client_key_path` | — | Client private key for mTLS (PEM) |
+
 ## Contributing
 
 Contributions are welcome! Please see the [organization contributing guide](https://github.com/streamlinelabs/.github/blob/main/CONTRIBUTING.md) for guidelines.
