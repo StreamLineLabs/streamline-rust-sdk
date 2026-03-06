@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 
 - fix: resolve tokio runtime panic on drop (2026-03-05)
+
+- refactor: simplify error type hierarchy (2026-03-06)
 ## [Unreleased]
 
 ## [0.2.0] - 2026-02-28
