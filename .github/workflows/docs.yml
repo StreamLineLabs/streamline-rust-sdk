@@ -45,7 +45,7 @@ jobs:
           echo "<meta http-equiv=\"refresh\" content=\"0; url=${CRATE_NAME}/index.html\">" > target/doc/index.html
 
       - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v4
         with:
           path: target/doc
 

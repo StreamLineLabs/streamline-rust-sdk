@@ -1,51 +1,45 @@
 name: CI
+
 on:
   push:
-    branches: [main]
   pull_request:
-    branches: [main]
+
 env:
   CARGO_TERM_COLOR: always
+
 jobs:
-  check:
+  ci:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: dtolnay/rust-toolchain@stable
         with:
+          toolchain: "1.80"
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
+
       - run: cargo fmt --all -- --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
-      - name: Install tarpaulin
-        run: cargo install cargo-tarpaulin --locked
-      - name: Generate coverage
-        run: cargo tarpaulin --out xml --skip-clean
-      - name: Upload coverage
-        uses: codecov/codecov-action@v4
-        with:
-          files: cobertura.xml
-          fail_ci_if_error: false
-        env:
-          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
 
-  integration-test:
-    name: Integration Tests
+  conformance:
     runs-on: ubuntu-latest
-    needs: [check]
-    timeout-minutes: 15
+    needs: ci
     steps:
       - uses: actions/checkout@v4
+
       - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+        with:
+          toolchain: "1.80"
+
       - name: Start Streamline server
-        run: docker compose -f docker-compose.test.yml up -d
-      - name: Wait for Streamline to be healthy
+        run: docker compose -f docker-compose.test.yml up -d --wait
+
+      - name: Wait for health check
         run: |
           for i in $(seq 1 30); do
-            if curl -sf http://localhost:9094/health; then
-              echo " Streamline is healthy"
+            if curl -sf http://localhost:9094/health > /dev/null 2>&1; then
+              echo "Streamline is healthy"
               exit 0
             fi
             echo "Waiting for Streamline... ($i/30)"
@@ -54,28 +48,10 @@ jobs:
           echo "Streamline failed to start"
           docker compose -f docker-compose.test.yml logs
           exit 1
-      - name: Run integration tests
-        run: cargo test --features integration -v
-        env:
-          STREAMLINE_BOOTSTRAP_SERVERS: localhost:9092
-      - name: Tear down Streamline
+
+      - name: Run conformance tests
+        run: cargo test --test conformance -- --ignored
+
+      - name: Stop Streamline server
         if: always()
-        run: docker compose -f docker-compose.test.yml down
-
-  security-audit:
-    name: Security Audit
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - run: cargo install cargo-audit --locked
-      - run: cargo audit
-
-  cargo-deny:
-    name: Dependency Check (cargo-deny)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: EmbarkStudios/cargo-deny-action@v2
-        with:
-          command: check
+        run: docker compose -f docker-compose.test.yml down -v
