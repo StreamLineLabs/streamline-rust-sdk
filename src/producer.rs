@@ -672,3 +672,15 @@ mod tests {
         assert!(producer.flush().await.is_ok());
     }
 }
+
+/// Validates that a record does not exceed the maximum allowed size.
+fn validate_record_size(key: &[u8], value: &[u8], max_size: usize) -> crate::error::Result<()> {
+    let total = key.len() + value.len();
+    if total > max_size {
+        return Err(crate::error::Error::new(
+            crate::error::ErrorKind::Serialization,
+            format!("record size {} exceeds maximum {}", total, max_size),
+        ));
+    }
+    Ok(())
+}
