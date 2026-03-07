@@ -111,47 +111,26 @@ impl<K, V> Consumer<K, V> {
             timeout.as_millis() as i32,
         );
 
-        let conn_handle = match self.pool.get().await {
-            Ok(h) => h,
-            Err(e) => {
-                debug!("Connection failed during poll: {}", e);
-                return Ok(Vec::new());
-            }
-        };
+        let conn_handle = self.pool.get().await?;
         let mut conn = conn_handle.lock().await;
-        let stream = match conn.ensure_connected().await {
-            Ok(s) => s,
-            Err(e) => {
-                debug!("Failed to connect during poll: {}", e);
-                return Ok(Vec::new());
-            }
-        };
+        let stream = conn.ensure_connected().await?;
 
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-        if let Err(e) = stream.write_all(&request).await {
-            warn!("Failed to send fetch request: {}", e);
-            return Ok(Vec::new());
-        }
+        stream.write_all(&request).await
+            .map_err(|e| Error::connection(format!("Fetch write failed: {e}")))?;
 
         // Read response
-        let resp_len = match stream.read_i32().await {
-            Ok(len) => len,
-            Err(e) => {
-                warn!("Failed to read fetch response length: {}", e);
-                return Ok(Vec::new());
-            }
-        };
+        let resp_len = stream.read_i32().await
+            .map_err(|e| Error::connection(format!("Fetch read failed: {e}")))?;
 
         if resp_len <= 0 || resp_len > 100_000_000 {
             return Ok(Vec::new());
         }
 
         let mut resp_buf = vec![0u8; resp_len as usize];
-        if let Err(e) = stream.read_exact(&mut resp_buf).await {
-            warn!("Failed to read fetch response body: {}", e);
-            return Ok(Vec::new());
-        }
+        stream.read_exact(&mut resp_buf).await
+            .map_err(|e| Error::connection(format!("Fetch read body failed: {e}")))?;
 
         // Parse records from the response (simplified extraction)
         let records = parse_fetch_response::<K, V>(&self.topic, &resp_buf);
@@ -164,15 +143,54 @@ impl<K, V> Consumer<K, V> {
         Ok(records)
     }
 
-    /// Commits the current offsets.
+    /// Commits the current offsets to the broker via the OffsetCommit API.
+    /// Requires a consumer group ID to be configured.
     pub async fn commit(&self) -> Result<()> {
-        debug!(
-            "Committing offset {} for topic {}",
-            self.fetch_offset.load(Ordering::Relaxed),
-            self.topic
+        let offset = self.fetch_offset.load(Ordering::Relaxed);
+        let group_id = match &self.config.group_id {
+            Some(g) => g.clone(),
+            None => {
+                debug!("No group_id configured — offset tracked locally only (offset={})", offset);
+                return Ok(());
+            }
+        };
+
+        debug!("Committing offset {} for topic {} (group {})", offset, self.topic, group_id);
+
+        let correlation_id = self.next_correlation_id();
+        let request = build_offset_commit_request(
+            correlation_id,
+            &group_id,
+            &self.topic,
+            0, // partition
+            offset,
         );
-        // Offset is tracked locally; server-side commit requires OffsetCommit API
-        // which needs consumer group coordination (JoinGroup/SyncGroup first)
+
+        let conn_handle = self.pool.get().await?;
+        let mut conn = conn_handle.lock().await;
+        let stream = conn.ensure_connected().await?;
+
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        stream.write_all(&request).await
+            .map_err(|e| Error::connection(format!("Commit write failed: {e}")))?;
+
+        let resp_len = stream.read_i32().await
+            .map_err(|e| Error::connection(format!("Commit read failed: {e}")))?;
+        let mut resp_buf = vec![0u8; resp_len as usize];
+        stream.read_exact(&mut resp_buf).await
+            .map_err(|e| Error::connection(format!("Commit read body failed: {e}")))?;
+
+        // Check for error in response (simplified: check error code at known offset)
+        if resp_buf.len() >= 14 {
+            let error_code = i16::from_be_bytes([resp_buf[12], resp_buf[13]]);
+            if error_code != 0 {
+                return Err(Error::new(
+                    ErrorKind::Protocol,
+                    format!("OffsetCommit failed with error code {}", error_code),
+                ).with_hint("Ensure the consumer group exists and the client is authorized"));
+            }
+        }
+
         Ok(())
     }
 
@@ -298,21 +316,252 @@ fn build_fetch_request(
     buf
 }
 
-/// Parse records from a Kafka Fetch response (simplified).
-/// Extracts records from the RecordBatch format embedded in the response.
+/// Parse records from a Kafka Fetch response (v11).
+///
+/// Response layout after correlation_id:
+/// [throttle_time_ms:i32][error_code:i16][session_id:i32]
+/// [responses_count:i32] [
+///   [topic_name:string][partitions_count:i32] [
+///     [partition:i32][error_code:i16][high_watermark:i64]
+///     [last_stable_offset:i64][log_start_offset:i64]
+///     [aborted_txns_count:i32][...][record_set_size:i32][record_batch...]
+///   ]
+/// ]
 fn parse_fetch_response<K: From<Vec<u8>>, V: From<Vec<u8>>>(
     topic: &str,
-    _resp: &[u8],
+    resp: &[u8],
 ) -> Vec<ConsumerRecord<K, V>> {
-    // Full Fetch response parsing requires decoding:
-    // - throttle_time_ms, error_code, session_id
-    // - per-topic: topic name, per-partition: partition, error_code, high_watermark, records
-    // - RecordBatch: base_offset, length, magic, CRC, attributes, records...
-    //
-    // For now, return empty — the real records will be available when connected
-    // to an actual Streamline server. The wire protocol framing above is correct
-    // and the server will respond with real data.
-    Vec::new()
+    let mut records = Vec::new();
+
+    // Minimum response: correlation_id(4) + throttle(4) + error(2) + session(4) + count(4) = 18
+    if resp.len() < 18 {
+        return records;
+    }
+
+    let mut pos: usize = 4; // skip correlation_id
+    pos += 4; // throttle_time_ms
+    pos += 2; // error_code
+    pos += 4; // session_id
+
+    let responses_count = read_i32(resp, &mut pos);
+    if responses_count <= 0 {
+        return records;
+    }
+
+    for _ in 0..responses_count {
+        // topic name (string: i16 length + bytes)
+        let topic_len = read_i16(resp, &mut pos) as usize;
+        if pos + topic_len > resp.len() { break; }
+        let _topic_name = &resp[pos..pos + topic_len];
+        pos += topic_len;
+
+        let partitions_count = read_i32(resp, &mut pos);
+        for _ in 0..partitions_count {
+            if pos + 28 > resp.len() { break; }
+            let partition = read_i32(resp, &mut pos);
+            let error_code = read_i16(resp, &mut pos);
+            let _high_watermark = read_i64(resp, &mut pos);
+            let _last_stable = read_i64(resp, &mut pos);
+            let _log_start = read_i64(resp, &mut pos);
+
+            // Skip aborted transactions
+            let aborted_count = read_i32(resp, &mut pos);
+            if aborted_count > 0 {
+                for _ in 0..aborted_count {
+                    pos += 16; // producer_id(8) + first_offset(8)
+                    if pos > resp.len() { return records; }
+                }
+            }
+
+            // Skip preferred_read_replica (v11)
+            if pos + 4 <= resp.len() {
+                pos += 4;
+            }
+
+            // Record set size
+            if pos + 4 > resp.len() { break; }
+            let record_set_size = read_i32(resp, &mut pos);
+            if record_set_size <= 0 || error_code != 0 {
+                if record_set_size > 0 { pos += record_set_size as usize; }
+                continue;
+            }
+
+            let batch_end = pos + record_set_size as usize;
+            if batch_end > resp.len() { break; }
+
+            // Parse RecordBatch(es) within the record set
+            while pos + 57 <= batch_end {
+                let base_offset = read_i64(resp, &mut pos);
+                let batch_length = read_i32(resp, &mut pos);
+                if batch_length <= 0 || pos + batch_length as usize > batch_end {
+                    pos = batch_end;
+                    break;
+                }
+                let batch_data_end = pos + batch_length as usize;
+
+                pos += 4; // partition_leader_epoch
+                let magic = if pos < batch_data_end { resp[pos] } else { 0 };
+                pos += 1;
+                pos += 4; // CRC
+                let _attributes = read_i16(resp, &mut pos);
+                let _last_offset_delta = read_i32(resp, &mut pos);
+                let first_timestamp = read_i64(resp, &mut pos);
+                let _max_timestamp = read_i64(resp, &mut pos);
+                pos += 8; // producer_id
+                pos += 2; // producer_epoch
+                pos += 4; // base_sequence
+
+                let num_records = read_i32(resp, &mut pos);
+
+                if magic != 2 || num_records <= 0 {
+                    pos = batch_data_end;
+                    continue;
+                }
+
+                for _ in 0..num_records {
+                    if pos >= batch_data_end { break; }
+
+                    let record_size = varint_decode(resp, &mut pos);
+                    if record_size <= 0 { continue; }
+                    let record_end = pos + record_size as usize;
+                    if record_end > batch_data_end { pos = batch_data_end; break; }
+
+                    let _rec_attrs = if pos < record_end { resp[pos] } else { 0 };
+                    pos += 1;
+                    let timestamp_delta = varint_decode(resp, &mut pos);
+                    let offset_delta = varint_decode(resp, &mut pos);
+
+                    // Key
+                    let key_len = varint_decode(resp, &mut pos);
+                    let key = if key_len > 0 && pos + key_len as usize <= record_end {
+                        let k = resp[pos..pos + key_len as usize].to_vec();
+                        pos += key_len as usize;
+                        Some(K::from(k))
+                    } else {
+                        if key_len > 0 { pos += key_len as usize; }
+                        None
+                    };
+
+                    // Value
+                    let value_len = varint_decode(resp, &mut pos);
+                    let value = if value_len > 0 && pos + value_len as usize <= record_end {
+                        let v = resp[pos..pos + value_len as usize].to_vec();
+                        pos += value_len as usize;
+                        V::from(v)
+                    } else {
+                        if value_len > 0 { pos += value_len as usize; }
+                        V::from(Vec::new())
+                    };
+
+                    // Skip headers
+                    pos = record_end;
+
+                    records.push(ConsumerRecord {
+                        topic: topic.to_string(),
+                        partition,
+                        offset: base_offset + offset_delta,
+                        timestamp: first_timestamp + timestamp_delta,
+                        key,
+                        value,
+                        headers: Headers::new(),
+                    });
+                }
+
+                pos = batch_data_end;
+            }
+
+            pos = batch_end;
+        }
+    }
+
+    records
+}
+
+fn read_i16(buf: &[u8], pos: &mut usize) -> i16 {
+    if *pos + 2 > buf.len() { *pos = buf.len(); return 0; }
+    let v = i16::from_be_bytes([buf[*pos], buf[*pos + 1]]);
+    *pos += 2;
+    v
+}
+
+fn read_i32(buf: &[u8], pos: &mut usize) -> i32 {
+    if *pos + 4 > buf.len() { *pos = buf.len(); return 0; }
+    let v = i32::from_be_bytes([buf[*pos], buf[*pos + 1], buf[*pos + 2], buf[*pos + 3]]);
+    *pos += 4;
+    v
+}
+
+fn read_i64(buf: &[u8], pos: &mut usize) -> i64 {
+    if *pos + 8 > buf.len() { *pos = buf.len(); return 0; }
+    let v = i64::from_be_bytes([
+        buf[*pos], buf[*pos + 1], buf[*pos + 2], buf[*pos + 3],
+        buf[*pos + 4], buf[*pos + 5], buf[*pos + 6], buf[*pos + 7],
+    ]);
+    *pos += 8;
+    v
+}
+
+/// Decode a zigzag-encoded varint from the buffer.
+fn varint_decode(buf: &[u8], pos: &mut usize) -> i64 {
+    let mut result: u64 = 0;
+    let mut shift = 0u32;
+    loop {
+        if *pos >= buf.len() { return 0; }
+        let byte = buf[*pos] as u64;
+        *pos += 1;
+        result |= (byte & 0x7F) << shift;
+        if byte & 0x80 == 0 { break; }
+        shift += 7;
+        if shift > 63 { return 0; }
+    }
+    // Zigzag decode
+    ((result >> 1) as i64) ^ (-((result & 1) as i64))
+}
+
+/// Build a Kafka OffsetCommit request (API key 8, version 7).
+fn build_offset_commit_request(
+    correlation_id: i32,
+    group_id: &str,
+    topic: &str,
+    partition: i32,
+    offset: i64,
+) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(128);
+    buf.extend_from_slice(&[0u8; 4]); // length placeholder
+
+    // Request header
+    buf.extend_from_slice(&8i16.to_be_bytes());      // api_key: OffsetCommit = 8
+    buf.extend_from_slice(&7i16.to_be_bytes());       // api_version: 7
+    buf.extend_from_slice(&correlation_id.to_be_bytes());
+    let client_id = b"streamline-rust-sdk";
+    buf.extend_from_slice(&(client_id.len() as i16).to_be_bytes());
+    buf.extend_from_slice(client_id);
+
+    // OffsetCommit request body (v7):
+    // group_id + generation_id + member_id + group_instance_id + topics
+    buf.extend_from_slice(&(group_id.len() as i16).to_be_bytes());
+    buf.extend_from_slice(group_id.as_bytes());
+    buf.extend_from_slice(&(-1i32).to_be_bytes());    // generation_id: -1 (simple consumer)
+    buf.extend_from_slice(&(-1i16).to_be_bytes());    // member_id: null
+    buf.extend_from_slice(&(-1i16).to_be_bytes());    // group_instance_id: null
+
+    // topics array
+    buf.extend_from_slice(&1i32.to_be_bytes());       // 1 topic
+    buf.extend_from_slice(&(topic.len() as i16).to_be_bytes());
+    buf.extend_from_slice(topic.as_bytes());
+
+    // partitions array
+    buf.extend_from_slice(&1i32.to_be_bytes());       // 1 partition
+    buf.extend_from_slice(&partition.to_be_bytes());
+    buf.extend_from_slice(&offset.to_be_bytes());
+    buf.extend_from_slice(&(-1i32).to_be_bytes());    // committed_leader_epoch
+    buf.extend_from_slice(&(-1i16).to_be_bytes());    // metadata: null
+
+    // Fill length
+    let total_len = (buf.len() - 4) as i32;
+    buf[0..4].copy_from_slice(&total_len.to_be_bytes());
+
+    buf
 }
 
 #[cfg(test)]
