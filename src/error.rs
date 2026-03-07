@@ -102,6 +102,19 @@ impl Error {
         Self::new(ErrorKind::Timeout, format!("Operation timed out: {}", operation))
             .with_hint("Consider increasing timeout settings or checking server load")
     }
+
+    /// Creates a generic connection error.
+    pub fn connection(message: impl Into<String>) -> Self {
+        Self::new(ErrorKind::Connection, message)
+    }
+
+    /// Returns true if this error is transient and the operation can be retried.
+    pub fn is_retryable(&self) -> bool {
+        matches!(
+            self.kind,
+            ErrorKind::Connection | ErrorKind::ConnectionFailed | ErrorKind::Timeout
+        )
+    }
 }
 
 impl fmt::Display for Error {
