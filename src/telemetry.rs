@@ -50,6 +50,7 @@ use tracing::Instrument;
 /// The result of the produce operation.
 #[cfg(feature = "telemetry")]
 pub async fn trace_produce<F, Fut, T>(topic: &str, f: F) -> T
+
 where
     F: FnOnce() -> Fut,
     Fut: std::future::Future<Output = T>,
