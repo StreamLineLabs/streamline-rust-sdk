@@ -49,6 +49,7 @@ fn test_error_source_chain() {
     let err = Error::new(ErrorKind::ConnectionFailed, "connection failed")
         .with_source(io_err);
 
+
     // std::error::Error::source returns the underlying cause
     let source = std::error::Error::source(&err);
     assert!(source.is_some());
