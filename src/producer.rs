@@ -11,6 +11,7 @@ use tracing::debug;
 
 /// Metadata for a produced record.
 #[derive(Debug, Clone)]
+#[must_use]
 pub struct RecordMetadata {
     /// Topic name
     pub topic: String,
@@ -103,6 +104,7 @@ impl<K: AsRef<[u8]> + Send, V: AsRef<[u8]> + Send> Producer<K, V> {
 
     /// Sends a message to a topic using the Kafka Produce wire protocol.
     /// Retries on transient failures with exponential backoff.
+    #[must_use = "the future must be awaited to send the message"]
     pub async fn send(
         &self,
         topic: &str,
@@ -207,6 +209,7 @@ impl<K: AsRef<[u8]> + Send, V: AsRef<[u8]> + Send> Producer<K, V> {
     }
 
     /// Sends a batch of records to a topic in a single Produce request.
+    #[must_use = "the future must be awaited to send the batch"]
     pub async fn send_batch(
         &self,
         topic: &str,
