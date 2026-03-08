@@ -255,3 +255,38 @@ mod tests {
         // With the feature, it would inject traceparent headers
     }
 }
+
+
+/// Simple metrics collector for tracking SDK operations.
+#[derive(Debug, Default)]
+pub struct MetricsCollector {
+    pub messages_produced: std::sync::atomic::AtomicU64,
+    pub messages_consumed: std::sync::atomic::AtomicU64,
+    pub errors_total: std::sync::atomic::AtomicU64,
+    pub bytes_sent: std::sync::atomic::AtomicU64,
+    pub bytes_received: std::sync::atomic::AtomicU64,
+}
+
+impl MetricsCollector {
+    /// Creates a new metrics collector.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Records a successful produce operation.
+    pub fn record_produce(&self, bytes: u64) {
+        self.messages_produced.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.bytes_sent.fetch_add(bytes, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Records a successful consume operation.
+    pub fn record_consume(&self, bytes: u64) {
+        self.messages_consumed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.bytes_received.fetch_add(bytes, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Records an error.
+    pub fn record_error(&self) {
+        self.errors_total.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
