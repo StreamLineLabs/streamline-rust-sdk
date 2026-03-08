@@ -64,7 +64,7 @@ tracing-opentelemetry = { version = "0.23", optional = true }
 
 # Utils
 uuid = { version = "1.6", features = ["v4"] }
-dashmap = "5.5"
+dashmap = "6.1"
 
 # HTTP client (for Schema Registry)
 reqwest = { version = "0.12", features = ["json"], default-features = false, optional = true }
