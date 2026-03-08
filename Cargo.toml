@@ -60,7 +60,7 @@ base64 = { version = "0.22", optional = true }
 # Telemetry (optional)
 opentelemetry = { version = "0.22", optional = true }
 opentelemetry_sdk = { version = "0.22", optional = true }
-tracing-opentelemetry = { version = "0.23", optional = true }
+tracing-opentelemetry = { version = "0.32", optional = true }
 
 # Utils
 uuid = { version = "1.6", features = ["v4"] }
