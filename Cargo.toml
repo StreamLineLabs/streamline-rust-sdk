@@ -59,7 +59,7 @@ base64 = { version = "0.22", optional = true }
 
 # Telemetry (optional)
 opentelemetry = { version = "0.22", optional = true }
-opentelemetry_sdk = { version = "0.22", optional = true }
+opentelemetry_sdk = { version = "0.31", optional = true }
 tracing-opentelemetry = { version = "0.23", optional = true }
 
 # Utils
