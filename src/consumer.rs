@@ -77,6 +77,7 @@ impl<K, V> Consumer<K, V> {
     }
 
     /// Subscribes to the topic.
+    #[must_use = "the future must be awaited to complete subscription"]
     pub async fn subscribe(&mut self) -> Result<()> {
         if !self.subscribed {
             info!("Subscribing to topic {}", self.topic);
@@ -86,6 +87,7 @@ impl<K, V> Consumer<K, V> {
     }
 
     /// Polls for new records using the Kafka Fetch protocol.
+    #[must_use = "the future must be awaited to receive records"]
     pub async fn poll(&self, timeout: Duration) -> Result<Vec<ConsumerRecord<K, V>>>
     where
         K: From<Vec<u8>>,
