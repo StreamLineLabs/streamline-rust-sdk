@@ -73,6 +73,7 @@ pub struct ConnectionPool {
     connections: Vec<Arc<Mutex<KafkaConnection>>>,
     #[allow(dead_code)]
     next: AtomicUsize,
+    config: StreamlineConfig,
 }
 
 impl ConnectionPool {
@@ -93,6 +94,7 @@ impl ConnectionPool {
         Self {
             connections,
             next: AtomicUsize::new(0),
+            config: config.clone(),
         }
     }
 
@@ -137,7 +139,13 @@ impl ConnectionPool {
         false
     }
 
-    // -- Admin operations (delegated from Admin client) --
+    // -- Admin operations (via HTTP API on port 9094) --
+
+    /// Derives the HTTP API base URL from the bootstrap server address.
+    fn http_base_url(&self) -> String {
+        let host = self.config.bootstrap_servers.split(':').next().unwrap_or("localhost");
+        format!("http://{}:9094", host)
+    }
 
     pub(crate) async fn create_topic(
         &self,
@@ -146,58 +154,213 @@ impl ConnectionPool {
         replication_factor: i16,
         config: &std::collections::HashMap<String, String>,
     ) -> Result<()> {
-        let _conn = self.get().await?;
-        // TODO: send CreateTopics request via Kafka protocol
-        debug!("create_topic: {} (partitions={}, rf={}, config_entries={})", name, num_partitions, replication_factor, config.len());
+        let url = format!("{}/api/v1/topics", self.http_base_url());
+        let mut body = serde_json::json!({
+            "name": name,
+            "partitions": num_partitions,
+            "replication_factor": replication_factor,
+        });
+        if !config.is_empty() {
+            body["config"] = serde_json::json!(config);
+        }
+
+        let client = reqwest::Client::new();
+        let resp = client.post(&url)
+            .json(&body)
+            .timeout(self.config.request_timeout)
+            .send()
+            .await
+            .map_err(|e| Error::new(crate::error::ErrorKind::Connection, format!("HTTP request failed: {e}")))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(Error::new(crate::error::ErrorKind::Internal, format!("create_topic failed (HTTP {status}): {body}")));
+        }
         Ok(())
     }
 
     pub(crate) async fn delete_topic(&self, name: &str) -> Result<()> {
-        let _conn = self.get().await?;
-        debug!("delete_topic: {}", name);
+        let url = format!("{}/api/v1/topics/{}", self.http_base_url(), name);
+        let client = reqwest::Client::new();
+        let resp = client.delete(&url)
+            .timeout(self.config.request_timeout)
+            .send()
+            .await
+            .map_err(|e| Error::new(crate::error::ErrorKind::Connection, format!("HTTP request failed: {e}")))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(Error::new(crate::error::ErrorKind::Internal, format!("delete_topic failed (HTTP {status}): {body}")));
+        }
         Ok(())
     }
 
     pub(crate) async fn list_topics(&self) -> Result<Vec<crate::admin::TopicInfo>> {
-        let _conn = self.get().await?;
-        debug!("list_topics");
-        Ok(vec![])
+        let url = format!("{}/api/v1/topics", self.http_base_url());
+        let client = reqwest::Client::new();
+        let resp = client.get(&url)
+            .timeout(self.config.request_timeout)
+            .send()
+            .await
+            .map_err(|e| Error::new(crate::error::ErrorKind::Connection, format!("HTTP request failed: {e}")))?;
+
+        if !resp.status().is_success() {
+            return Err(Error::new(crate::error::ErrorKind::Internal, "list_topics failed"));
+        }
+
+        let items: Vec<serde_json::Value> = resp.json().await
+            .map_err(|e| Error::new(crate::error::ErrorKind::Internal, format!("JSON parse failed: {e}")))?;
+
+        Ok(items.into_iter().map(|v| crate::admin::TopicInfo {
+            name: v["name"].as_str().unwrap_or("").to_string(),
+            partitions: v["partitions"].as_i64().unwrap_or(1) as i32,
+            replication_factor: v["replication_factor"].as_i64().unwrap_or(1) as i16,
+            internal: v["internal"].as_bool().unwrap_or(false),
+        }).collect())
     }
 
     pub(crate) async fn describe_topic(&self, name: &str) -> Result<(crate::admin::TopicInfo, Vec<crate::admin::PartitionInfo>)> {
-        let _conn = self.get().await?;
-        debug!("describe_topic: {}", name);
-        Err(Error::topic_not_found(name))
+        let url = format!("{}/api/v1/topics/{}", self.http_base_url(), name);
+        let client = reqwest::Client::new();
+        let resp = client.get(&url)
+            .timeout(self.config.request_timeout)
+            .send()
+            .await
+            .map_err(|e| Error::new(crate::error::ErrorKind::Connection, format!("HTTP request failed: {e}")))?;
+
+        if resp.status().as_u16() == 404 {
+            return Err(Error::topic_not_found(name));
+        }
+        if !resp.status().is_success() {
+            return Err(Error::new(crate::error::ErrorKind::Internal, "describe_topic failed"));
+        }
+
+        let v: serde_json::Value = resp.json().await
+            .map_err(|e| Error::new(crate::error::ErrorKind::Internal, format!("JSON parse failed: {e}")))?;
+
+        let info = crate::admin::TopicInfo {
+            name: v["name"].as_str().unwrap_or(name).to_string(),
+            partitions: v["partitions"].as_i64().unwrap_or(1) as i32,
+            replication_factor: v["replication_factor"].as_i64().unwrap_or(1) as i16,
+            internal: v["internal"].as_bool().unwrap_or(false),
+        };
+
+        let partitions = v["partition_info"].as_array()
+            .map(|arr| arr.iter().map(|p| crate::admin::PartitionInfo {
+                id: p["id"].as_i64().unwrap_or(0) as i32,
+                leader: p["leader"].as_i64().unwrap_or(-1) as i32,
+                replicas: p["replicas"].as_array().map(|r| r.iter().filter_map(|v| v.as_i64().map(|n| n as i32)).collect()).unwrap_or_default(),
+                isr: p["isr"].as_array().map(|r| r.iter().filter_map(|v| v.as_i64().map(|n| n as i32)).collect()).unwrap_or_default(),
+            }).collect())
+            .unwrap_or_default();
+
+        Ok((info, partitions))
     }
 
     pub(crate) async fn add_partitions(&self, name: &str, total_count: i32) -> Result<()> {
-        let _conn = self.get().await?;
-        debug!("add_partitions: {} -> {}", name, total_count);
+        let url = format!("{}/api/v1/topics/{}/partitions", self.http_base_url(), name);
+        let body = serde_json::json!({ "total_count": total_count });
+        let client = reqwest::Client::new();
+        let resp = client.post(&url)
+            .json(&body)
+            .timeout(self.config.request_timeout)
+            .send()
+            .await
+            .map_err(|e| Error::new(crate::error::ErrorKind::Connection, format!("HTTP request failed: {e}")))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(Error::new(crate::error::ErrorKind::Internal, format!("add_partitions failed (HTTP {status}): {body}")));
+        }
         Ok(())
     }
 
     pub(crate) async fn list_consumer_groups(&self) -> Result<Vec<String>> {
-        let _conn = self.get().await?;
-        debug!("list_consumer_groups");
-        Ok(vec![])
+        let url = format!("{}/api/v1/consumer-groups", self.http_base_url());
+        let client = reqwest::Client::new();
+        let resp = client.get(&url)
+            .timeout(self.config.request_timeout)
+            .send()
+            .await
+            .map_err(|e| Error::new(crate::error::ErrorKind::Connection, format!("HTTP request failed: {e}")))?;
+
+        if !resp.status().is_success() {
+            return Err(Error::new(crate::error::ErrorKind::Internal, "list_consumer_groups failed"));
+        }
+
+        let items: Vec<serde_json::Value> = resp.json().await
+            .map_err(|e| Error::new(crate::error::ErrorKind::Internal, format!("JSON parse failed: {e}")))?;
+
+        Ok(items.into_iter().filter_map(|v| v["id"].as_str().map(|s| s.to_string())).collect())
     }
 
     pub(crate) async fn describe_consumer_group(&self, group_id: &str) -> Result<crate::admin::ConsumerGroupInfo> {
-        let _conn = self.get().await?;
-        debug!("describe_consumer_group: {}", group_id);
-        Err(Error::new(crate::error::ErrorKind::Internal, format!("Consumer group not found: {}", group_id)))
+        let url = format!("{}/api/v1/consumer-groups/{}", self.http_base_url(), group_id);
+        let client = reqwest::Client::new();
+        let resp = client.get(&url)
+            .timeout(self.config.request_timeout)
+            .send()
+            .await
+            .map_err(|e| Error::new(crate::error::ErrorKind::Connection, format!("HTTP request failed: {e}")))?;
+
+        if resp.status().as_u16() == 404 {
+            return Err(Error::new(crate::error::ErrorKind::Internal, format!("Consumer group not found: {group_id}")));
+        }
+        if !resp.status().is_success() {
+            return Err(Error::new(crate::error::ErrorKind::Internal, "describe_consumer_group failed"));
+        }
+
+        let v: serde_json::Value = resp.json().await
+            .map_err(|e| Error::new(crate::error::ErrorKind::Internal, format!("JSON parse failed: {e}")))?;
+
+        Ok(crate::admin::ConsumerGroupInfo {
+            group_id: v["id"].as_str().unwrap_or(group_id).to_string(),
+            state: v["state"].as_str().unwrap_or("unknown").to_string(),
+            members: v["members"].as_array().map(|a| a.len()).unwrap_or(0),
+        })
     }
 
     pub(crate) async fn delete_consumer_group(&self, group_id: &str) -> Result<()> {
-        let _conn = self.get().await?;
-        debug!("delete_consumer_group: {}", group_id);
+        let url = format!("{}/api/v1/consumer-groups/{}", self.http_base_url(), group_id);
+        let client = reqwest::Client::new();
+        let resp = client.delete(&url)
+            .timeout(self.config.request_timeout)
+            .send()
+            .await
+            .map_err(|e| Error::new(crate::error::ErrorKind::Connection, format!("HTTP request failed: {e}")))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            return Err(Error::new(crate::error::ErrorKind::Internal, format!("delete_consumer_group failed (HTTP {status})")));
+        }
         Ok(())
     }
 
     pub(crate) async fn list_brokers(&self) -> Result<Vec<crate::admin::BrokerInfo>> {
-        let _conn = self.get().await?;
-        debug!("list_brokers");
-        Ok(vec![])
+        let url = format!("{}/api/v1/cluster/brokers", self.http_base_url());
+        let client = reqwest::Client::new();
+        let resp = client.get(&url)
+            .timeout(self.config.request_timeout)
+            .send()
+            .await
+            .map_err(|e| Error::new(crate::error::ErrorKind::Connection, format!("HTTP request failed: {e}")))?;
+
+        if !resp.status().is_success() {
+            return Err(Error::new(crate::error::ErrorKind::Internal, "list_brokers failed"));
+        }
+
+        let items: Vec<serde_json::Value> = resp.json().await
+            .map_err(|e| Error::new(crate::error::ErrorKind::Internal, format!("JSON parse failed: {e}")))?;
+
+        Ok(items.into_iter().map(|v| crate::admin::BrokerInfo {
+            id: v["id"].as_i64().unwrap_or(0) as i32,
+            host: v["host"].as_str().unwrap_or("").to_string(),
+            port: v["port"].as_i64().unwrap_or(9092) as i32,
+            rack: v["rack"].as_str().map(|s| s.to_string()),
+        }).collect())
     }
 }
 
