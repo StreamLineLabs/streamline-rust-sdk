@@ -10,10 +10,8 @@
 //! ```
 
 use serde::{Deserialize, Serialize};
-use streamline_client::{
-    schema::{SchemaRegistry, SchemaType},
-    ConsumerConfig, ProducerRecord, Streamline,
-};
+use streamline_client::schema::{SchemaRegistryClient, SchemaType};
+use streamline_client::{Headers, ProducerRecord, Streamline};
 
 /// User record matching the registered Avro schema.
 #[derive(Debug, Serialize, Deserialize)]
@@ -54,7 +52,7 @@ async fn main() -> Result<(), streamline_client::Error> {
         .await?;
 
     // === 2. Create a schema registry client ===
-    let registry = SchemaRegistry::new(&registry_url)?;
+    let registry = SchemaRegistryClient::new(&registry_url);
 
     // === 3. Register an Avro schema ===
     println!("=== Registering Schema ===");
@@ -65,7 +63,7 @@ async fn main() -> Result<(), streamline_client::Error> {
 
     // Retrieve the schema back by id
     let retrieved = registry.get_schema(schema_id).await?;
-    println!("Retrieved schema: {retrieved}");
+    println!("Retrieved schema: {:?}", retrieved);
 
     // === 4. Check schema compatibility ===
     println!("\n=== Checking Compatibility ===");
@@ -87,37 +85,36 @@ async fn main() -> Result<(), streamline_client::Error> {
         };
         let value = serde_json::to_string(&user).expect("serialize user");
 
-        let record = ProducerRecord::builder()
-            .key(format!("user-{i}"))
-            .value(value)
-            .schema_id(schema_id)
-            .build();
-
-        let metadata = producer.send(TOPIC, record).await?;
+        let record = ProducerRecord::new(format!("user-{i}"), value);
+        let metadata = producer
+            .send_batch(TOPIC, vec![record])
+            .await?;
         println!(
-            "Produced user-{i} to partition={}, offset={}",
-            metadata.partition, metadata.offset
+            "Produced user-{i}: {} record(s)",
+            metadata.len(),
         );
     }
 
     // === 6. Consume and deserialize with schema ===
     println!("\n=== Consuming Messages with Schema ===");
-    let consumer_config = ConsumerConfig::builder()
+
+    let mut consumer = client
+        .consumer::<Vec<u8>, Vec<u8>>(TOPIC)
         .group_id("rust-schema-group")
         .auto_offset_reset("earliest")
-        .schema_registry_url(&registry_url)
-        .build();
+        .build()
+        .await?;
 
-    let consumer = client.consumer::<String, String>(consumer_config).await?;
-    consumer.subscribe(&[TOPIC]).await?;
+    consumer.subscribe().await?;
 
     let records = consumer.poll(std::time::Duration::from_secs(5)).await?;
     for record in &records {
-        let user: User = serde_json::from_str(record.value()).expect("deserialize user");
+        let value_str = String::from_utf8_lossy(&record.value);
+        let user: User = serde_json::from_str(&value_str).expect("deserialize user");
         println!(
             "Received: partition={}, offset={}, user={{id:{}, name:{}, email:{}}}",
-            record.partition(),
-            record.offset(),
+            record.partition,
+            record.offset,
             user.id,
             user.name,
             user.email,

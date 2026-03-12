@@ -10,7 +10,8 @@
 //! Run:
 //!   cargo run --example query_usage
 
-use streamline_client::{Headers, QueryClient, QueryRequest, Streamline, TopicConfig};
+use streamline_client::query::{QueryClient, QueryRequest};
+use streamline_client::{Headers, Streamline, TopicConfig};
 
 #[tokio::main]
 async fn main() -> streamline_client::Result<()> {
@@ -22,7 +23,8 @@ async fn main() -> streamline_client::Result<()> {
     // Produce sample data
     let client = Streamline::builder()
         .bootstrap_servers(&bootstrap)
-        .build()?;
+        .build()
+        .await?;
 
     let admin = client.admin();
     let _ = admin
@@ -35,8 +37,9 @@ async fn main() -> streamline_client::Result<()> {
             r#"{{"user":"user-{i}","action":"click","value":{}}}"#,
             i * 10
         );
+        let key = format!("user-{i}");
         producer
-            .send("events", None, value, Headers::new())
+            .send("events", key, value, Headers::new())
             .await?;
     }
     println!("Produced 10 events");
@@ -49,9 +52,9 @@ async fn main() -> streamline_client::Result<()> {
     let url = query_client.query_url();
     println!("Query endpoint: {url}");
 
-    // Using QueryRequest builder
+    // Using QueryRequest
     let request = QueryRequest::new("SELECT * FROM topic('events') LIMIT 5");
-    println!("SQL: {}", request.sql());
+    println!("SQL: {}", request.sql);
 
     // Query with custom options
     let request = QueryRequest::new("SELECT * FROM topic('events') ORDER BY offset DESC")
@@ -59,8 +62,8 @@ async fn main() -> streamline_client::Result<()> {
         .with_max_rows(3);
     println!(
         "\n--- With options: timeout={}ms, max_rows={} ---",
-        request.timeout_ms(),
-        request.max_rows()
+        request.timeout_ms,
+        request.max_rows
     );
 
     // Explain query plan

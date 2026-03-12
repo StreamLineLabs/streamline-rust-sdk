@@ -8,7 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `HttpAdmin` client for expanded admin operations via HTTP REST API (reqwest-based)
+- `HttpAdmin::cluster_info()` — cluster overview including broker list
+- `HttpAdmin::consumer_group_lag()` / `consumer_group_topic_lag()` — consumer group lag monitoring
+- `HttpAdmin::inspect_messages()` / `latest_messages()` — message inspection by offset
+- `HttpAdmin::metrics_history()` — server metrics history
+- Model types: `ClusterInfo`, `ClusterBrokerInfo`, `ConsumerGroupLag`, `ConsumerLag`, `InspectedMessage`, `MetricPoint`
+
 - feat: add TLS configuration support for producer
+- feat: add circuit breaker pattern (`CircuitBreaker`) with configurable thresholds
+- feat: wire circuit breaker into Producer for automatic failure protection
 - fix: resolve tokio runtime panic on drop (2026-03-05)
 - refactor: simplify error type hierarchy (2026-03-06)
 - test: add integration tests for TLS connections (2026-03-06)

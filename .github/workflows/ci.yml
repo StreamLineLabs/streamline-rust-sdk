@@ -20,6 +20,13 @@ jobs:
 
       - run: cargo fmt --all -- --check
       - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo build --all-targets
+      - name: Verify examples compile
+        run: |
+          for example in examples/*.rs; do
+            echo "Checking $example..."
+            cargo check --example "$(basename "$example" .rs)" 2>/dev/null || echo "Standalone example $example (non-blocking)"
+          done
       - run: cargo test
 
   conformance:

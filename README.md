@@ -321,6 +321,52 @@ cargo test
 | `consumer.pause()` | Pause consuming |
 | `consumer.resume()` | Resume consuming |
 
+### Admin (Kafka Protocol)
+
+| Method | Description |
+|--------|-------------|
+| `admin.create_topic(config).await` | Create a topic |
+| `admin.delete_topic(name).await` | Delete a topic |
+| `admin.list_topics().await` | List all topics |
+| `admin.describe_topic(name).await` | Get topic details |
+| `admin.list_brokers().await` | List cluster brokers |
+| `admin.list_consumer_groups().await` | List consumer groups |
+| `admin.describe_consumer_group(id).await` | Describe a group |
+| `admin.delete_consumer_group(id).await` | Delete a group |
+
+### HTTP Admin (Cluster, Lag, Inspect, Metrics)
+
+The `HttpAdmin` communicates with the Streamline HTTP REST API (port 9094) for operations not available via Kafka protocol.
+
+```rust
+use streamline_client::HttpAdmin;
+
+let admin = HttpAdmin::new("http://localhost:9094");
+
+// Cluster overview
+let cluster = admin.cluster_info().await?;
+println!("Cluster: {}, Brokers: {}", cluster.cluster_id, cluster.brokers.len());
+
+// Consumer group lag monitoring
+let lag = admin.consumer_group_lag("my-group").await?;
+println!("Total lag: {}", lag.total_lag);
+for p in &lag.partitions {
+    println!("  {}:{} lag={}", p.topic, p.partition, p.lag);
+}
+
+// Message inspection
+let messages = admin.inspect_messages("events", 0, None, 10).await?;
+for m in &messages {
+    println!("offset={} value={}", m.offset, m.value);
+}
+
+// Latest messages
+let latest = admin.latest_messages("events", 5).await?;
+
+// Server metrics
+let metrics = admin.metrics_history().await?;
+```
+
 ## Requirements
 
 - Rust 1.80 or later
@@ -365,6 +411,32 @@ cargo test
 | `ca_cert_path` | — | Path to CA certificate (PEM) |
 | `client_cert_path` | — | Client certificate for mTLS (PEM) |
 | `client_key_path` | — | Client private key for mTLS (PEM) |
+
+## Circuit Breaker
+
+Protect your application from cascading failures when the Streamline server is unresponsive:
+
+```rust
+use streamline_client::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
+use std::time::Duration;
+
+let cb = CircuitBreaker::new(CircuitBreakerConfig::default()
+    .failure_threshold(5)        // Open after 5 consecutive failures
+    .success_threshold(2)        // Close after 2 half-open successes
+    .open_timeout(Duration::from_secs(30)));
+
+if cb.check() {
+    match client.produce("events", "key", "value").await {
+        Ok(_) => cb.record_success(),
+        Err(e) => {
+            cb.record_failure();
+            return Err(e);
+        }
+    }
+}
+```
+
+When the circuit is open, `check()` returns `false` and operations should be skipped. See the [Circuit Breaker guide](https://streamlinelabs.dev/docs/features/circuit-breaker) for details.
 
 ## Contributing
 

@@ -1,6 +1,7 @@
 //! Main Streamline client.
 
 use crate::admin::Admin;
+use crate::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
 use crate::config::{ConsumerConfig, ProducerConfig, SecurityProtocol, StreamlineConfig};
 use crate::connection::ConnectionPool;
 use crate::consumer::Consumer;
@@ -32,6 +33,7 @@ use tracing::info;
 pub struct Streamline {
     config: Arc<StreamlineConfig>,
     pool: Arc<ConnectionPool>,
+    circuit_breaker: Option<Arc<CircuitBreaker>>,
 }
 
 impl Streamline {
@@ -66,7 +68,10 @@ impl Streamline {
 
     /// Creates a producer with custom configuration.
     pub fn producer_with_config<K: AsRef<[u8]> + Send, V: AsRef<[u8]> + Send>(&self, config: ProducerConfig) -> Producer<K, V> {
-        Producer::new(self.config.clone(), self.pool.clone(), config)
+        match &self.circuit_breaker {
+            Some(cb) => Producer::with_circuit_breaker(self.config.clone(), self.pool.clone(), config, cb.clone()),
+            None => Producer::new(self.config.clone(), self.pool.clone(), config),
+        }
     }
 
     /// Creates a consumer builder for a topic.
@@ -106,6 +111,7 @@ pub struct StreamlineBuilder {
     connection_pool_size: Option<usize>,
     connect_timeout: Option<Duration>,
     request_timeout: Option<Duration>,
+    circuit_breaker: Option<CircuitBreakerConfig>,
 }
 
 impl StreamlineBuilder {
@@ -133,6 +139,18 @@ impl StreamlineBuilder {
         self
     }
 
+    /// Enables circuit breaker with default configuration.
+    pub fn with_circuit_breaker(mut self) -> Self {
+        self.circuit_breaker = Some(CircuitBreakerConfig::default());
+        self
+    }
+
+    /// Enables circuit breaker with custom configuration.
+    pub fn with_circuit_breaker_config(mut self, config: CircuitBreakerConfig) -> Self {
+        self.circuit_breaker = Some(config);
+        self
+    }
+
     /// Builds the client.
     pub async fn build(self) -> Result<Streamline> {
         let bootstrap_servers = self
@@ -151,14 +169,16 @@ impl StreamlineBuilder {
 
         let config = Arc::new(config);
         let pool = Arc::new(ConnectionPool::new(&config));
+        let circuit_breaker = self.circuit_breaker.map(|cb_config| Arc::new(CircuitBreaker::new(cb_config)));
 
         info!(
-            "Streamline client created for {} (pool_size={})",
+            "Streamline client created for {} (pool_size={}, circuit_breaker={})",
             bootstrap_servers,
-            pool.size()
+            pool.size(),
+            circuit_breaker.is_some(),
         );
 
-        Ok(Streamline { config, pool })
+        Ok(Streamline { config, pool, circuit_breaker })
     }
 }
 

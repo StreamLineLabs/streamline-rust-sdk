@@ -219,6 +219,195 @@ impl Admin {
     }
 }
 
+// ── HTTP-based Admin Operations ─────────────────────────────────────────────
+// These methods communicate via the Streamline HTTP REST API for operations
+// not available through the Kafka wire protocol.
+
+/// Consumer lag information for a single partition.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct ConsumerLag {
+    /// Topic name.
+    pub topic: String,
+    /// Partition index.
+    pub partition: i32,
+    /// Current consumer offset.
+    pub current_offset: i64,
+    /// End (log-end) offset.
+    pub end_offset: i64,
+    /// Offset lag.
+    pub lag: i64,
+}
+
+/// Aggregated consumer group lag.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct ConsumerGroupLag {
+    /// Consumer group ID.
+    pub group_id: String,
+    /// Per-partition lag details.
+    pub partitions: Vec<ConsumerLag>,
+    /// Total lag across all partitions.
+    pub total_lag: i64,
+}
+
+/// Cluster overview information.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct ClusterInfo {
+    /// Cluster identifier.
+    pub cluster_id: String,
+    /// ID of the responding broker.
+    pub broker_id: i32,
+    /// List of brokers in the cluster.
+    pub brokers: Vec<ClusterBrokerInfo>,
+    /// ID of the controller broker.
+    pub controller: i32,
+}
+
+/// Broker information from the cluster info endpoint.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct ClusterBrokerInfo {
+    /// Broker ID.
+    pub id: i32,
+    /// Broker hostname.
+    pub host: String,
+    /// Broker port.
+    pub port: i32,
+    /// Optional rack identifier.
+    pub rack: Option<String>,
+}
+
+/// A message returned by the inspection API.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct InspectedMessage {
+    /// Message offset.
+    pub offset: i64,
+    /// Message key (optional).
+    pub key: Option<String>,
+    /// Message value.
+    pub value: String,
+    /// Message timestamp.
+    pub timestamp: i64,
+    /// Partition index.
+    pub partition: i32,
+    /// Message headers.
+    #[serde(default)]
+    pub headers: HashMap<String, String>,
+}
+
+/// A single metric data point.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct MetricPoint {
+    /// Metric name.
+    pub name: String,
+    /// Metric value.
+    pub value: f64,
+    /// Metric labels.
+    #[serde(default)]
+    pub labels: HashMap<String, String>,
+    /// Metric timestamp.
+    pub timestamp: i64,
+}
+
+/// HTTP-based admin client for expanded operations.
+///
+/// Communicates with the Streamline HTTP REST API (default port 9094)
+/// for operations like cluster info, consumer lag monitoring, message
+/// inspection, and metrics history.
+///
+/// # Example
+///
+/// ```rust,no_run
+/// use streamline_client::admin::HttpAdmin;
+///
+/// #[tokio::main]
+/// async fn main() -> Result<(), streamline_client::Error> {
+///     let admin = HttpAdmin::new("http://localhost:9094");
+///     let info = admin.cluster_info().await?;
+///     println!("Cluster: {}", info.cluster_id);
+///     Ok(())
+/// }
+/// ```
+pub struct HttpAdmin {
+    base_url: String,
+    client: reqwest::Client,
+}
+
+impl HttpAdmin {
+    /// Creates a new HTTP admin client.
+    pub fn new(base_url: &str) -> Self {
+        Self {
+            base_url: base_url.trim_end_matches('/').to_string(),
+            client: reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(30))
+                .build()
+                .unwrap_or_default(),
+        }
+    }
+
+    /// Returns cluster overview including broker list.
+    pub async fn cluster_info(&self) -> Result<ClusterInfo> {
+        self.get("/v1/cluster").await
+    }
+
+    /// Returns consumer lag for a specific consumer group.
+    pub async fn consumer_group_lag(&self, group_id: &str) -> Result<ConsumerGroupLag> {
+        self.get(&format!("/v1/consumer-groups/{}/lag", group_id)).await
+    }
+
+    /// Returns consumer lag for a specific topic within a group.
+    pub async fn consumer_group_topic_lag(
+        &self,
+        group_id: &str,
+        topic: &str,
+    ) -> Result<ConsumerGroupLag> {
+        self.get(&format!("/v1/consumer-groups/{}/lag/{}", group_id, topic)).await
+    }
+
+    /// Browses messages from a topic partition.
+    pub async fn inspect_messages(
+        &self,
+        topic: &str,
+        partition: i32,
+        offset: Option<i64>,
+        limit: usize,
+    ) -> Result<Vec<InspectedMessage>> {
+        let mut path = format!("/v1/inspect/{}?partition={}&limit={}", topic, partition, limit);
+        if let Some(off) = offset {
+            path.push_str(&format!("&offset={}", off));
+        }
+        self.get(&path).await
+    }
+
+    /// Returns the most recent messages from a topic.
+    pub async fn latest_messages(&self, topic: &str, count: usize) -> Result<Vec<InspectedMessage>> {
+        self.get(&format!("/v1/inspect/{}/latest?count={}", topic, count)).await
+    }
+
+    /// Returns metrics history from the server.
+    pub async fn metrics_history(&self) -> Result<Vec<MetricPoint>> {
+        self.get("/v1/metrics/history").await
+    }
+
+    async fn get<T: serde::de::DeserializeOwned>(&self, path: &str) -> Result<T> {
+        let url = format!("{}{}", self.base_url, path);
+        let resp = self.client.get(&url).send().await.map_err(|e| {
+            Error::new(ErrorKind::Connection, format!("HTTP request failed: {}", e))
+        })?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(Error::new(
+                ErrorKind::Server,
+                format!("HTTP {}: {}", status, body),
+            ));
+        }
+
+        resp.json().await.map_err(|e| {
+            Error::new(ErrorKind::Serialization, format!("JSON decode failed: {}", e))
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
