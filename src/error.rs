@@ -30,8 +30,12 @@ pub enum ErrorKind {
     Serialization,
     /// Schema registry error
     Schema,
+    /// Server-side error (non-success HTTP status)
+    Server,
     /// Internal error
     Internal,
+    /// Transaction error
+    Transaction,
 }
 
 /// Error type for Streamline client operations.
@@ -108,11 +112,22 @@ impl Error {
         Self::new(ErrorKind::Connection, message)
     }
 
+    /// Creates a server error from an HTTP status and response body.
+    pub fn server(status: u16, body: &str) -> Self {
+        Self::new(ErrorKind::Server, format!("HTTP {}: {}", status, body))
+            .with_hint("Check server logs for details or verify the request parameters")
+    }
+
+    /// Creates a transaction error.
+    pub fn transaction(message: impl Into<String>) -> Self {
+        Self::new(ErrorKind::Transaction, message)
+    }
+
     /// Returns true if this error is transient and the operation can be retried.
     pub fn is_retryable(&self) -> bool {
         matches!(
             self.kind,
-            ErrorKind::Connection | ErrorKind::ConnectionFailed | ErrorKind::Timeout
+            ErrorKind::Connection | ErrorKind::ConnectionFailed | ErrorKind::Timeout | ErrorKind::Server
         )
     }
 }

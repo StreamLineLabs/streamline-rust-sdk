@@ -1,7 +1,7 @@
 //! Connection pool for managing reusable broker connections.
 
 use crate::config::StreamlineConfig;
-use crate::error::{Error, Result};
+use crate::error::{Error, ErrorKind, Result};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -40,13 +40,13 @@ impl KafkaConnection {
 
     /// Returns a mutable reference to the underlying stream, connecting lazily
     /// or reconnecting if the previous connection was lost.
-    #[allow(dead_code)]
     pub(crate) async fn ensure_connected(&mut self) -> Result<&mut TcpStream> {
         if self.stream.is_none() {
             self.connect().await?;
         }
-        // Safe: we just ensured the stream is Some above.
-        Ok(self.stream.as_mut().unwrap())
+        self.stream.as_mut().ok_or_else(|| {
+            Error::new(ErrorKind::Connection, "failed to establish connection")
+        })
     }
 
     /// Returns whether this connection currently holds an open stream.
@@ -71,7 +71,6 @@ impl KafkaConnection {
 /// re-established transparently.
 pub struct ConnectionPool {
     connections: Vec<Arc<Mutex<KafkaConnection>>>,
-    #[allow(dead_code)]
     next: AtomicUsize,
 }
 
@@ -101,7 +100,6 @@ impl ConnectionPool {
     /// The connection is lazily established on first access. If a previous
     /// connection was marked disconnected (e.g. after an I/O error), it will
     /// be re-established automatically.
-    #[allow(dead_code)]
     pub(crate) async fn get(&self) -> Result<ConnectionHandle> {
         let idx = self.next.fetch_add(1, Ordering::Relaxed) % self.connections.len();
         let conn = self.connections[idx].clone();
@@ -207,13 +205,11 @@ impl ConnectionPool {
 /// The connection is returned to the pool automatically when the handle is
 /// dropped (no extra bookkeeping required since we use round-robin indexing).
 pub(crate) struct ConnectionHandle {
-    #[allow(dead_code)]
     inner: Arc<Mutex<KafkaConnection>>,
 }
 
 impl ConnectionHandle {
     /// Locks the connection for exclusive use.
-    #[allow(dead_code)]
     pub(crate) async fn lock(&self) -> tokio::sync::MutexGuard<'_, KafkaConnection> {
         self.inner.lock().await
     }

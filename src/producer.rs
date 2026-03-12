@@ -3,6 +3,7 @@
 use crate::config::{ProducerConfig, StreamlineConfig};
 use crate::connection::ConnectionPool;
 use crate::error::{Error, ErrorKind, Result};
+use crate::telemetry;
 use crate::Headers;
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::Arc;
@@ -74,10 +75,14 @@ impl<K, V> ProducerRecord<K, V> {
 /// Sends messages using the Kafka wire protocol over the connection pool's
 /// TCP connections. Uses the `kafka-protocol` crate for message framing.
 pub struct Producer<K, V> {
+    #[allow(dead_code)]
     client_config: Arc<StreamlineConfig>,
     pool: Arc<ConnectionPool>,
     config: ProducerConfig,
     correlation_id: AtomicI32,
+    circuit_breaker: Option<Arc<crate::circuit_breaker::CircuitBreaker>>,
+    in_transaction: bool,
+    transaction_buffer: Vec<(String, ProducerRecord<K, V>)>,
     _marker: std::marker::PhantomData<(K, V)>,
 }
 
@@ -93,6 +98,28 @@ impl<K: AsRef<[u8]> + Send, V: AsRef<[u8]> + Send> Producer<K, V> {
             pool,
             config,
             correlation_id: AtomicI32::new(1),
+            circuit_breaker: None,
+            in_transaction: false,
+            transaction_buffer: Vec::new(),
+            _marker: std::marker::PhantomData,
+        }
+    }
+
+    /// Creates a new producer with circuit breaker protection.
+    pub(crate) fn with_circuit_breaker(
+        client_config: Arc<StreamlineConfig>,
+        pool: Arc<ConnectionPool>,
+        config: ProducerConfig,
+        cb: Arc<crate::circuit_breaker::CircuitBreaker>,
+    ) -> Self {
+        Self {
+            client_config,
+            pool,
+            config,
+            correlation_id: AtomicI32::new(1),
+            circuit_breaker: Some(cb),
+            in_transaction: false,
+            transaction_buffer: Vec::new(),
             _marker: std::marker::PhantomData,
         }
     }
@@ -103,13 +130,29 @@ impl<K: AsRef<[u8]> + Send, V: AsRef<[u8]> + Send> Producer<K, V> {
 
     /// Sends a message to a topic using the Kafka Produce wire protocol.
     /// Retries on transient failures with exponential backoff.
+    /// Respects the circuit breaker if configured.
     pub async fn send(
+        &self,
+        topic: &str,
+        key: K,
+        value: V,
+        headers: Headers,
+    ) -> Result<RecordMetadata> {
+        telemetry::trace_produce(topic, || self.send_inner(topic, key, value, headers)).await
+    }
+
+    async fn send_inner(
         &self,
         topic: &str,
         key: K,
         value: V,
         _headers: Headers,
     ) -> Result<RecordMetadata> {
+        // Check circuit breaker before attempting send
+        if let Some(ref cb) = self.circuit_breaker {
+            cb.check()?;
+        }
+
         debug!("Sending message to topic {}", topic);
 
         let now_ms = std::time::SystemTime::now()
@@ -149,12 +192,27 @@ impl<K: AsRef<[u8]> + Send, V: AsRef<[u8]> + Send> Producer<K, V> {
             }
 
             match self.send_request(&request, topic, partition, now_ms).await {
-                Ok(metadata) => return Ok(metadata),
+                Ok(metadata) => {
+                    if let Some(ref cb) = self.circuit_breaker {
+                        cb.record_success();
+                    }
+                    return Ok(metadata);
+                }
                 Err(e) if e.is_retryable() && attempt < max_retries => {
+                    if let Some(ref cb) = self.circuit_breaker {
+                        cb.record_failure();
+                    }
                     debug!("Retryable error on attempt {}: {}", attempt + 1, e);
                     last_err = Some(e);
                 }
-                Err(e) => return Err(e),
+                Err(e) => {
+                    if e.is_retryable() {
+                        if let Some(ref cb) = self.circuit_breaker {
+                            cb.record_failure();
+                        }
+                    }
+                    return Err(e);
+                }
             }
         }
 
@@ -225,7 +283,7 @@ impl<K: AsRef<[u8]> + Send, V: AsRef<[u8]> + Send> Producer<K, V> {
         let compression_codec = compression_attr(&self.config.compression);
 
         // Build a multi-record batch in a single Produce request
-        let mut record_entries: Vec<(&[u8], &[u8])> = Vec::with_capacity(records.len());
+        let _record_entries: Vec<(&[u8], &[u8])> = Vec::with_capacity(records.len());
         // We need to hold onto the owned references
         let refs: Vec<(Vec<u8>, Vec<u8>)> = records
             .iter()
@@ -324,6 +382,59 @@ impl<K: AsRef<[u8]> + Send, V: AsRef<[u8]> + Send> Producer<K, V> {
         }
 
         Err(last_err.unwrap_or_else(|| Error::new(ErrorKind::Internal, "Batch send failed after retries")))
+    }
+
+    /// Begin a new transaction. Messages sent via `send_transactional` are
+    /// buffered until `commit_transaction` or `abort_transaction`.
+    pub fn begin_transaction(&mut self) -> Result<()> {
+        if self.in_transaction {
+            return Err(Error::transaction("Transaction already in progress"));
+        }
+        self.in_transaction = true;
+        self.transaction_buffer.clear();
+        Ok(())
+    }
+
+    /// Buffer a record within the current transaction.
+    pub fn send_transactional(&mut self, topic: &str, record: ProducerRecord<K, V>) -> Result<()> {
+        if !self.in_transaction {
+            return Err(Error::transaction("No transaction in progress"));
+        }
+        self.transaction_buffer.push((topic.to_string(), record));
+        Ok(())
+    }
+
+    /// Commit the transaction, sending all buffered records atomically.
+    pub async fn commit_transaction(&mut self) -> Result<Vec<RecordMetadata>> {
+        if !self.in_transaction {
+            return Err(Error::transaction("No transaction in progress"));
+        }
+        let entries = std::mem::take(&mut self.transaction_buffer);
+        self.in_transaction = false;
+
+        // Group records by topic and send each batch
+        let mut grouped: std::collections::HashMap<String, Vec<ProducerRecord<K, V>>> =
+            std::collections::HashMap::new();
+        for (topic, record) in entries {
+            grouped.entry(topic).or_default().push(record);
+        }
+
+        let mut all_results = Vec::new();
+        for (topic, records) in grouped {
+            let results = self.send_batch(&topic, records).await?;
+            all_results.extend(results);
+        }
+        Ok(all_results)
+    }
+
+    /// Abort the transaction, discarding all buffered records.
+    pub fn abort_transaction(&mut self) -> Result<()> {
+        if !self.in_transaction {
+            return Err(Error::transaction("No transaction in progress"));
+        }
+        self.transaction_buffer.clear();
+        self.in_transaction = false;
+        Ok(())
     }
 
     /// Flushes any buffered messages.
@@ -674,6 +785,7 @@ mod tests {
 }
 
 /// Validates that a record does not exceed the maximum allowed size.
+#[allow(dead_code)]
 fn validate_record_size(key: &[u8], value: &[u8], max_size: usize) -> crate::error::Result<()> {
     let total = key.len() + value.len();
     if total > max_size {

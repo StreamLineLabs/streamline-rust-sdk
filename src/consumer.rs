@@ -7,11 +7,12 @@
 use crate::config::{ConsumerConfig, StreamlineConfig};
 use crate::connection::ConnectionPool;
 use crate::error::{Error, ErrorKind, Result};
+use crate::telemetry;
 use crate::Headers;
 use std::sync::atomic::{AtomicI32, AtomicI64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 /// A record received from a consumer poll.
 #[derive(Debug, Clone)]
@@ -36,6 +37,7 @@ pub struct ConsumerRecord<K, V> {
 ///
 /// Sends Kafka Fetch requests over TCP to consume messages from topics.
 pub struct Consumer<K, V> {
+    #[allow(dead_code)]
     client_config: Arc<StreamlineConfig>,
     pool: Arc<ConnectionPool>,
     topic: String,
@@ -87,6 +89,14 @@ impl<K, V> Consumer<K, V> {
 
     /// Polls for new records using the Kafka Fetch protocol.
     pub async fn poll(&self, timeout: Duration) -> Result<Vec<ConsumerRecord<K, V>>>
+    where
+        K: From<Vec<u8>>,
+        V: From<Vec<u8>>,
+    {
+        telemetry::trace_consume(&self.topic, || self.poll_inner(timeout)).await
+    }
+
+    async fn poll_inner(&self, timeout: Duration) -> Result<Vec<ConsumerRecord<K, V>>>
     where
         K: From<Vec<u8>>,
         V: From<Vec<u8>>,
@@ -194,9 +204,52 @@ impl<K, V> Consumer<K, V> {
         Ok(())
     }
 
-    /// Commits the current offsets asynchronously.
-    pub fn commit_async(&self) {
-        debug!("Async commit requested");
+    /// Commits the current offsets asynchronously by spawning a background task.
+    /// Errors are logged but not propagated to the caller.
+    pub fn commit_async(&self)
+    where
+        K: Send + 'static,
+        V: Send + 'static,
+    {
+        let offset = self.fetch_offset.load(Ordering::Relaxed);
+        let group_id = match &self.config.group_id {
+            Some(g) => g.clone(),
+            None => {
+                debug!("Async commit: no group_id — offset tracked locally (offset={})", offset);
+                return;
+            }
+        };
+        let topic = self.topic.clone();
+        let pool = self.pool.clone();
+        let correlation_id = self.next_correlation_id();
+
+        tokio::spawn(async move {
+            let request = build_offset_commit_request(correlation_id, &group_id, &topic, 0, offset);
+            match pool.get().await {
+                Ok(conn_handle) => {
+                    let mut conn = conn_handle.lock().await;
+                    match conn.ensure_connected().await {
+                        Ok(stream) => {
+                            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                            if let Err(e) = stream.write_all(&request).await {
+                                debug!("Async commit write failed: {}", e);
+                                return;
+                            }
+                            match stream.read_i32().await {
+                                Ok(resp_len) if resp_len > 0 => {
+                                    let mut buf = vec![0u8; resp_len as usize];
+                                    let _ = stream.read_exact(&mut buf).await;
+                                }
+                                _ => {}
+                            }
+                            debug!("Async commit succeeded for offset {} (group {})", offset, group_id);
+                        }
+                        Err(e) => debug!("Async commit connection failed: {}", e),
+                    }
+                }
+                Err(e) => debug!("Async commit pool failed: {}", e),
+            }
+        });
     }
 
     /// Seeks to the beginning of all partitions.
@@ -327,6 +380,7 @@ fn build_fetch_request(
 ///     [aborted_txns_count:i32][...][record_set_size:i32][record_batch...]
 ///   ]
 /// ]
+#[allow(unused_assignments)] // pos is intentionally advanced past parsed sections
 fn parse_fetch_response<K: From<Vec<u8>>, V: From<Vec<u8>>>(
     topic: &str,
     resp: &[u8],

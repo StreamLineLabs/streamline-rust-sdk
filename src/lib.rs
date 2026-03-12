@@ -29,17 +29,21 @@ mod consumer;
 mod error;
 mod producer;
 pub mod admin;
+pub mod circuit_breaker;
+pub mod metrics;
 pub mod telemetry;
 
 pub use client::Streamline;
 pub use config::{StreamlineConfig, ConsumerConfig, ProducerConfig, TlsConfig, SaslConfig, SaslMechanism, SecurityProtocol};
 pub mod schema;
 pub mod query;
+pub use circuit_breaker::{CircuitBreaker, CircuitBreakerConfig, CircuitState};
 pub use connection::ConnectionPool;
 pub use consumer::{Consumer, ConsumerRecord};
 pub use error::{Error, ErrorKind, Result};
 pub use producer::{Producer, ProducerRecord, RecordMetadata};
-pub use admin::{Admin, TopicConfig, TopicInfo, PartitionInfo, BrokerInfo, ConsumerGroupInfo};
+pub use metrics::{ClientMetrics, MetricsSnapshot};
+pub use admin::{Admin, TopicConfig, TopicInfo, PartitionInfo, BrokerInfo, ConsumerGroupInfo, HttpAdmin, ClusterInfo, ClusterBrokerInfo, ConsumerGroupLag, ConsumerLag, InspectedMessage, MetricPoint};
 
 /// Message headers.
 pub mod headers {
