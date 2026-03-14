@@ -438,6 +438,26 @@ if cb.check() {
 
 When the circuit is open, `check()` returns `false` and operations should be skipped. See the [Circuit Breaker guide](https://streamlinelabs.dev/docs/features/circuit-breaker) for details.
 
+## Examples
+
+The [`examples/`](examples/) directory contains runnable examples:
+
+| Example | Description |
+|---------|-------------|
+| [producer.rs](examples/producer.rs) | Produce messages |
+| [consumer.rs](examples/consumer.rs) | Consume messages |
+| [query_usage.rs](examples/query_usage.rs) | SQL analytics with the embedded query engine |
+| [schema_registry.rs](examples/schema_registry.rs) | Schema registration and validation |
+| [circuit_breaker.rs](examples/circuit_breaker.rs) | Resilient production with circuit breaker |
+| [security.rs](examples/security.rs) | TLS and SASL authentication |
+
+Run any example:
+
+```bash
+cargo run --example producer
+cargo run --example circuit_breaker
+```
+
 ## Contributing
 
 Contributions are welcome! Please see the [organization contributing guide](https://github.com/streamlinelabs/.github/blob/main/CONTRIBUTING.md) for guidelines.
