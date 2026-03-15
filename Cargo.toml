@@ -84,3 +84,4 @@ path = "examples/consumer.rs"
 [lints.clippy]
 unwrap_used = "warn"
 expect_used = "warn"
+
