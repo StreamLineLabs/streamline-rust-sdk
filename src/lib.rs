@@ -32,6 +32,7 @@ pub mod admin;
 pub mod circuit_breaker;
 pub mod metrics;
 pub mod telemetry;
+pub mod traced;
 
 pub use client::Streamline;
 pub use config::{StreamlineConfig, ConsumerConfig, ProducerConfig, TlsConfig, SaslConfig, SaslMechanism, SecurityProtocol};
