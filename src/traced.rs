@@ -173,17 +173,17 @@ impl<K, V> TracedConsumer<K, V> {
     }
 
     /// Pauses consumption for the specified partitions.
-    pub fn pause(&self, partitions: &[i32]) {
+    pub fn pause(&self, partitions: &[i32]) -> Result<()> {
         self.inner.pause(partitions)
     }
 
     /// Resumes consumption for the specified partitions.
-    pub fn resume(&self, partitions: &[i32]) {
+    pub fn resume(&self, partitions: &[i32]) -> Result<()> {
         self.inner.resume(partitions)
     }
 
     /// Returns the set of currently paused partitions.
-    pub fn paused(&self) -> HashSet<i32> {
+    pub fn paused(&self) -> Result<HashSet<i32>> {
         self.inner.paused()
     }
 

@@ -254,6 +254,134 @@ mod tests {
         // Without the telemetry feature, this is a no-op
         // With the feature, it would inject traceparent headers
     }
+
+    #[tokio::test]
+    async fn test_trace_produce_returns_result_type() {
+        let result: Result<i32, &str> = trace_produce("topic", || async { Ok(42) }).await;
+        assert_eq!(result.unwrap(), 42);
+    }
+
+    #[tokio::test]
+    async fn test_trace_consume_returns_result_type() {
+        let result: Result<String, &str> =
+            trace_consume("topic", || async { Ok("data".to_string()) }).await;
+        assert_eq!(result.unwrap(), "data");
+    }
+
+    #[tokio::test]
+    async fn test_trace_process_returns_result_type() {
+        let result: Result<Vec<u8>, &str> =
+            trace_process("topic", 0, 0, || async { Ok(vec![1, 2, 3]) }).await;
+        assert_eq!(result.unwrap(), vec![1, 2, 3]);
+    }
+
+    #[tokio::test]
+    async fn test_trace_produce_with_different_topics() {
+        let r1 = trace_produce("orders", || async { 1 }).await;
+        let r2 = trace_produce("events", || async { 2 }).await;
+        assert_eq!(r1, 1);
+        assert_eq!(r2, 2);
+    }
+
+    #[tokio::test]
+    async fn test_trace_process_with_partition_and_offset() {
+        let result = trace_process("topic", 5, 12345, || async { "processed" }).await;
+        assert_eq!(result, "processed");
+    }
+
+    #[tokio::test]
+    async fn test_inject_context_does_not_modify_headers() {
+        let mut headers = crate::Headers::new();
+        headers.add("custom-key", b"custom-value");
+        inject_context(&mut headers);
+        // Original header still present
+        assert_eq!(headers.get("custom-key"), Some(b"custom-value".as_slice()));
+    }
+
+    #[test]
+    fn test_metrics_collector_new() {
+        let m = MetricsCollector::new();
+        assert_eq!(
+            m.messages_produced.load(std::sync::atomic::Ordering::Relaxed),
+            0
+        );
+        assert_eq!(
+            m.messages_consumed.load(std::sync::atomic::Ordering::Relaxed),
+            0
+        );
+        assert_eq!(
+            m.errors_total.load(std::sync::atomic::Ordering::Relaxed),
+            0
+        );
+    }
+
+    #[test]
+    fn test_metrics_collector_default() {
+        let m = MetricsCollector::default();
+        assert_eq!(
+            m.bytes_sent.load(std::sync::atomic::Ordering::Relaxed),
+            0
+        );
+        assert_eq!(
+            m.bytes_received.load(std::sync::atomic::Ordering::Relaxed),
+            0
+        );
+    }
+
+    #[test]
+    fn test_metrics_collector_record_produce() {
+        let m = MetricsCollector::new();
+        m.record_produce(256);
+        assert_eq!(
+            m.messages_produced.load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
+        assert_eq!(
+            m.bytes_sent.load(std::sync::atomic::Ordering::Relaxed),
+            256
+        );
+    }
+
+    #[test]
+    fn test_metrics_collector_record_consume() {
+        let m = MetricsCollector::new();
+        m.record_consume(512);
+        assert_eq!(
+            m.messages_consumed.load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
+        assert_eq!(
+            m.bytes_received.load(std::sync::atomic::Ordering::Relaxed),
+            512
+        );
+    }
+
+    #[test]
+    fn test_metrics_collector_record_error() {
+        let m = MetricsCollector::new();
+        m.record_error();
+        m.record_error();
+        assert_eq!(
+            m.errors_total.load(std::sync::atomic::Ordering::Relaxed),
+            2
+        );
+    }
+
+    #[test]
+    fn test_metrics_collector_accumulation() {
+        let m = MetricsCollector::new();
+        for _ in 0..10 {
+            m.record_produce(100);
+        }
+        assert_eq!(
+            m.messages_produced.load(std::sync::atomic::Ordering::Relaxed),
+            10
+        );
+        assert_eq!(
+            m.bytes_sent.load(std::sync::atomic::Ordering::Relaxed),
+            1000
+        );
+    }
 }
 
 
