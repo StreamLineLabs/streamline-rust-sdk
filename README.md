@@ -117,6 +117,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
+### Transactions
+
+```rust
+let mut producer = client.producer::<String, String>();
+producer.begin_transaction()?;
+
+producer.send_transactional("orders", record1).await?;
+producer.send_transactional("orders", record2).await?;
+
+let results = producer.commit_transaction().await?;
+// Or: producer.abort_transaction()?;
+```
+
+> **Note:** Transactions use client-side buffering. Messages are collected locally and sent
+> as a batch on commit, providing all-or-nothing delivery at the client level.
+
 ### Consumer
 
 ```rust
