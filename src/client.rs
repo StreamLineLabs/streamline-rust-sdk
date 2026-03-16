@@ -188,6 +188,7 @@ pub struct ConsumerBuilder<K, V> {
     pool: Arc<ConnectionPool>,
     topic: String,
     config: ConsumerConfig,
+    partitions: Vec<i32>,
     _marker: std::marker::PhantomData<(K, V)>,
 }
 
@@ -198,6 +199,7 @@ impl<K, V> ConsumerBuilder<K, V> {
             pool,
             topic,
             config: ConsumerConfig::default(),
+            partitions: Vec::new(),
             _marker: std::marker::PhantomData,
         }
     }
@@ -232,6 +234,15 @@ impl<K, V> ConsumerBuilder<K, V> {
         self
     }
 
+    /// Sets the partitions to consume from.
+    ///
+    /// If not specified, partitions are discovered via topic metadata on
+    /// subscribe, falling back to partition 0.
+    pub fn partitions(mut self, partitions: Vec<i32>) -> Self {
+        self.partitions = partitions;
+        self
+    }
+
     /// Builds the consumer.
     pub async fn build(self) -> Result<Consumer<K, V>> {
         Ok(Consumer::new(
@@ -239,6 +250,7 @@ impl<K, V> ConsumerBuilder<K, V> {
             self.pool,
             self.topic,
             self.config,
+            self.partitions,
         ))
     }
 }

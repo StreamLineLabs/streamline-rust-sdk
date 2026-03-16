@@ -9,8 +9,9 @@ use crate::connection::ConnectionPool;
 use crate::error::{Error, ErrorKind, Result};
 use crate::telemetry;
 use crate::Headers;
-use std::sync::atomic::{AtomicI32, AtomicI64, Ordering};
-use std::sync::Arc;
+use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tracing::{debug, info};
 
@@ -43,7 +44,9 @@ pub struct Consumer<K, V> {
     topic: String,
     config: ConsumerConfig,
     subscribed: bool,
-    fetch_offset: AtomicI64,
+    partitions: Vec<i32>,
+    partition_offsets: Mutex<HashMap<i32, i64>>,
+    paused_partitions: Mutex<HashSet<i32>>,
     correlation_id: AtomicI32,
     _marker: std::marker::PhantomData<(K, V)>,
 }
@@ -55,6 +58,7 @@ impl<K, V> Consumer<K, V> {
         pool: Arc<ConnectionPool>,
         topic: String,
         config: ConsumerConfig,
+        partitions: Vec<i32>,
     ) -> Self {
         let initial_offset = if config.auto_offset_reset == "earliest" {
             0
@@ -62,13 +66,20 @@ impl<K, V> Consumer<K, V> {
             -1 // latest: will be resolved on first fetch
         };
 
+        let partition_offsets: HashMap<i32, i64> = partitions
+            .iter()
+            .map(|&p| (p, initial_offset))
+            .collect();
+
         Self {
             client_config,
             pool,
             topic,
             config,
             subscribed: false,
-            fetch_offset: AtomicI64::new(initial_offset),
+            partitions,
+            partition_offsets: Mutex::new(partition_offsets),
+            paused_partitions: Mutex::new(HashSet::new()),
             correlation_id: AtomicI32::new(1000),
             _marker: std::marker::PhantomData,
         }
@@ -79,9 +90,49 @@ impl<K, V> Consumer<K, V> {
     }
 
     /// Subscribes to the topic.
+    ///
+    /// If no partitions were configured via the builder, attempts to discover
+    /// them via topic metadata, falling back to partition 0.
     pub async fn subscribe(&mut self) -> Result<()> {
         if !self.subscribed {
             info!("Subscribing to topic {}", self.topic);
+
+            // If no partitions were configured, discover them via metadata
+            if self.partitions.is_empty() {
+                match self.pool.describe_topic(&self.topic).await {
+                    Ok((topic_info, partition_infos)) => {
+                        self.partitions = if partition_infos.is_empty() {
+                            (0..topic_info.partitions).collect()
+                        } else {
+                            partition_infos.iter().map(|p| p.id).collect()
+                        };
+                        info!(
+                            "Discovered {} partitions for topic {}",
+                            self.partitions.len(),
+                            self.topic
+                        );
+                    }
+                    Err(_) => {
+                        debug!(
+                            "Metadata discovery failed for topic {}, defaulting to partition 0",
+                            self.topic
+                        );
+                        self.partitions = vec![0];
+                    }
+                }
+            }
+
+            // Initialize offsets for partitions that don't have one yet
+            let initial_offset = if self.config.auto_offset_reset == "earliest" {
+                0
+            } else {
+                -1
+            };
+            let mut offsets = self.partition_offsets.lock().unwrap();
+            for &p in &self.partitions {
+                offsets.entry(p).or_insert(initial_offset);
+            }
+
             self.subscribed = true;
         }
         Ok(())
@@ -108,16 +159,28 @@ impl<K, V> Consumer<K, V> {
             ));
         }
 
-        let partition = 0i32;
-        let fetch_offset = self.fetch_offset.load(Ordering::Relaxed);
+        // Collect active (non-paused) partitions with their current offsets
+        let active_partitions: Vec<(i32, i64)> = {
+            let paused = self.paused_partitions.lock().unwrap();
+            let offsets = self.partition_offsets.lock().unwrap();
+            self.partitions
+                .iter()
+                .filter(|p| !paused.contains(p))
+                .map(|&p| (p, offsets.get(&p).copied().unwrap_or(0)))
+                .collect()
+        };
+
+        if active_partitions.is_empty() {
+            return Ok(Vec::new());
+        }
+
         let correlation_id = self.next_correlation_id();
 
-        // Build Kafka Fetch request (API key 1, version 11)
+        // Build Kafka Fetch request (API key 1, version 11) for all active partitions
         let request = build_fetch_request(
             correlation_id,
             &self.topic,
-            partition,
-            fetch_offset,
+            &active_partitions,
             timeout.as_millis() as i32,
         );
 
@@ -145,9 +208,15 @@ impl<K, V> Consumer<K, V> {
         // Parse records from the response (simplified extraction)
         let records = parse_fetch_response::<K, V>(&self.topic, &resp_buf);
 
-        // Advance the fetch offset past consumed records
-        if let Some(last) = records.last() {
-            self.fetch_offset.store(last.offset + 1, Ordering::Relaxed);
+        // Advance per-partition fetch offsets past consumed records
+        if !records.is_empty() {
+            let mut offsets = self.partition_offsets.lock().unwrap();
+            for record in &records {
+                let entry = offsets.entry(record.partition).or_insert(0);
+                if record.offset + 1 > *entry {
+                    *entry = record.offset + 1;
+                }
+            }
         }
 
         Ok(records)
@@ -156,48 +225,57 @@ impl<K, V> Consumer<K, V> {
     /// Commits the current offsets to the broker via the OffsetCommit API.
     /// Requires a consumer group ID to be configured.
     pub async fn commit(&self) -> Result<()> {
-        let offset = self.fetch_offset.load(Ordering::Relaxed);
         let group_id = match &self.config.group_id {
             Some(g) => g.clone(),
             None => {
-                debug!("No group_id configured — offset tracked locally only (offset={})", offset);
+                debug!("No group_id configured — offsets tracked locally only");
                 return Ok(());
             }
         };
 
-        debug!("Committing offset {} for topic {} (group {})", offset, self.topic, group_id);
+        let offsets: HashMap<i32, i64> = self.partition_offsets.lock().unwrap().clone();
 
-        let correlation_id = self.next_correlation_id();
-        let request = build_offset_commit_request(
-            correlation_id,
-            &group_id,
-            &self.topic,
-            0, // partition
-            offset,
-        );
+        for (&partition, &offset) in &offsets {
+            debug!(
+                "Committing offset {} for topic {} partition {} (group {})",
+                offset, self.topic, partition, group_id
+            );
 
-        let conn_handle = self.pool.get().await?;
-        let mut conn = conn_handle.lock().await;
-        let stream = conn.ensure_connected().await?;
+            let correlation_id = self.next_correlation_id();
+            let request = build_offset_commit_request(
+                correlation_id,
+                &group_id,
+                &self.topic,
+                partition,
+                offset,
+            );
 
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        stream.write_all(&request).await
-            .map_err(|e| Error::connection(format!("Commit write failed: {e}")))?;
+            let conn_handle = self.pool.get().await?;
+            let mut conn = conn_handle.lock().await;
+            let stream = conn.ensure_connected().await?;
 
-        let resp_len = stream.read_i32().await
-            .map_err(|e| Error::connection(format!("Commit read failed: {e}")))?;
-        let mut resp_buf = vec![0u8; resp_len as usize];
-        stream.read_exact(&mut resp_buf).await
-            .map_err(|e| Error::connection(format!("Commit read body failed: {e}")))?;
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            stream.write_all(&request).await
+                .map_err(|e| Error::connection(format!("Commit write failed: {e}")))?;
 
-        // Check for error in response (simplified: check error code at known offset)
-        if resp_buf.len() >= 14 {
-            let error_code = i16::from_be_bytes([resp_buf[12], resp_buf[13]]);
-            if error_code != 0 {
-                return Err(Error::new(
-                    ErrorKind::Protocol,
-                    format!("OffsetCommit failed with error code {}", error_code),
-                ).with_hint("Ensure the consumer group exists and the client is authorized"));
+            let resp_len = stream.read_i32().await
+                .map_err(|e| Error::connection(format!("Commit read failed: {e}")))?;
+            let mut resp_buf = vec![0u8; resp_len as usize];
+            stream.read_exact(&mut resp_buf).await
+                .map_err(|e| Error::connection(format!("Commit read body failed: {e}")))?;
+
+            // Check for error in response (simplified: check error code at known offset)
+            if resp_buf.len() >= 14 {
+                let error_code = i16::from_be_bytes([resp_buf[12], resp_buf[13]]);
+                if error_code != 0 {
+                    return Err(Error::new(
+                        ErrorKind::Protocol,
+                        format!(
+                            "OffsetCommit failed for partition {} with error code {}",
+                            partition, error_code
+                        ),
+                    ).with_hint("Ensure the consumer group exists and the client is authorized"));
+                }
             }
         }
 
@@ -211,81 +289,119 @@ impl<K, V> Consumer<K, V> {
         K: Send + 'static,
         V: Send + 'static,
     {
-        let offset = self.fetch_offset.load(Ordering::Relaxed);
         let group_id = match &self.config.group_id {
             Some(g) => g.clone(),
             None => {
-                debug!("Async commit: no group_id — offset tracked locally (offset={})", offset);
+                debug!("Async commit: no group_id — offsets tracked locally");
                 return;
             }
         };
+        let offsets: HashMap<i32, i64> = self.partition_offsets.lock().unwrap().clone();
         let topic = self.topic.clone();
         let pool = self.pool.clone();
         let correlation_id = self.next_correlation_id();
 
         tokio::spawn(async move {
-            let request = build_offset_commit_request(correlation_id, &group_id, &topic, 0, offset);
-            match pool.get().await {
-                Ok(conn_handle) => {
-                    let mut conn = conn_handle.lock().await;
-                    match conn.ensure_connected().await {
-                        Ok(stream) => {
-                            use tokio::io::{AsyncReadExt, AsyncWriteExt};
-                            if let Err(e) = stream.write_all(&request).await {
-                                debug!("Async commit write failed: {}", e);
-                                return;
-                            }
-                            match stream.read_i32().await {
-                                Ok(resp_len) if resp_len > 0 => {
-                                    let mut buf = vec![0u8; resp_len as usize];
-                                    let _ = stream.read_exact(&mut buf).await;
+            for (&partition, &offset) in &offsets {
+                let request = build_offset_commit_request(
+                    correlation_id,
+                    &group_id,
+                    &topic,
+                    partition,
+                    offset,
+                );
+                match pool.get().await {
+                    Ok(conn_handle) => {
+                        let mut conn = conn_handle.lock().await;
+                        match conn.ensure_connected().await {
+                            Ok(stream) => {
+                                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                                if let Err(e) = stream.write_all(&request).await {
+                                    debug!("Async commit write failed for partition {}: {}", partition, e);
+                                    continue;
                                 }
-                                _ => {}
+                                match stream.read_i32().await {
+                                    Ok(resp_len) if resp_len > 0 => {
+                                        let mut buf = vec![0u8; resp_len as usize];
+                                        let _ = stream.read_exact(&mut buf).await;
+                                    }
+                                    _ => {}
+                                }
+                                debug!(
+                                    "Async commit succeeded for partition {} offset {} (group {})",
+                                    partition, offset, group_id
+                                );
                             }
-                            debug!("Async commit succeeded for offset {} (group {})", offset, group_id);
+                            Err(e) => debug!("Async commit connection failed: {}", e),
                         }
-                        Err(e) => debug!("Async commit connection failed: {}", e),
                     }
+                    Err(e) => debug!("Async commit pool failed: {}", e),
                 }
-                Err(e) => debug!("Async commit pool failed: {}", e),
             }
         });
     }
 
     /// Seeks to the beginning of all partitions.
     pub async fn seek_to_beginning(&self) -> Result<()> {
-        self.fetch_offset.store(0, Ordering::Relaxed);
-        debug!("Seeking to beginning");
+        let mut offsets = self.partition_offsets.lock().unwrap();
+        for offset in offsets.values_mut() {
+            *offset = 0;
+        }
+        debug!("Seeking to beginning for all partitions");
         Ok(())
     }
 
     /// Seeks to the end of all partitions.
     pub async fn seek_to_end(&self) -> Result<()> {
-        self.fetch_offset.store(-1, Ordering::Relaxed);
-        debug!("Seeking to end");
+        let mut offsets = self.partition_offsets.lock().unwrap();
+        for offset in offsets.values_mut() {
+            *offset = -1;
+        }
+        debug!("Seeking to end for all partitions");
         Ok(())
     }
 
-    /// Seeks to a specific offset.
-    pub async fn seek(&self, _partition: i32, offset: i64) -> Result<()> {
-        self.fetch_offset.store(offset, Ordering::Relaxed);
-        debug!("Seeking to offset {}", offset);
+    /// Seeks to a specific offset for a partition.
+    pub async fn seek(&self, partition: i32, offset: i64) -> Result<()> {
+        let mut offsets = self.partition_offsets.lock().unwrap();
+        offsets.insert(partition, offset);
+        debug!("Seeking partition {} to offset {}", partition, offset);
         Ok(())
     }
 
     /// Returns the current position for a partition.
-    pub async fn position(&self, _partition: i32) -> Result<i64> {
-        Ok(self.fetch_offset.load(Ordering::Relaxed))
+    pub async fn position(&self, partition: i32) -> Result<i64> {
+        let offsets = self.partition_offsets.lock().unwrap();
+        Ok(offsets.get(&partition).copied().unwrap_or(0))
     }
 
-    /// Pauses consumption.
-    pub fn pause(&self) {
-        debug!("Consumer paused");
+    /// Pauses consumption for the specified partitions.
+    /// Paused partitions are skipped during `poll()`.
+    pub fn pause(&self, partitions: &[i32]) {
+        let mut paused = self.paused_partitions.lock().unwrap();
+        for &p in partitions {
+            paused.insert(p);
+        }
+        debug!("Paused partitions: {:?}", *paused);
     }
 
-    /// Resumes consumption.
-    pub fn resume(&self) {
-        debug!("Consumer resumed");
+    /// Resumes consumption for the specified partitions.
+    pub fn resume(&self, partitions: &[i32]) {
+        let mut paused = self.paused_partitions.lock().unwrap();
+        for &p in partitions {
+            paused.remove(&p);
+        }
+        debug!("Resumed partitions, still paused: {:?}", *paused);
+    }
+
+    /// Returns the set of currently paused partitions.
+    pub fn paused(&self) -> HashSet<i32> {
+        self.paused_partitions.lock().unwrap().clone()
+    }
+
+    /// Returns the list of assigned partitions.
+    pub fn assigned_partitions(&self) -> &[i32] {
+        &self.partitions
     }
 
     /// Returns the consumer configuration.
@@ -316,8 +432,7 @@ impl<K, V> Drop for Consumer<K, V> {
 fn build_fetch_request(
     correlation_id: i32,
     topic: &str,
-    partition: i32,
-    fetch_offset: i64,
+    partitions: &[(i32, i64)],
     max_wait_ms: i32,
 ) -> Vec<u8> {
     let mut buf = Vec::with_capacity(128);
@@ -349,13 +464,15 @@ fn build_fetch_request(
     buf.extend_from_slice(&(topic.len() as i16).to_be_bytes());
     buf.extend_from_slice(topic.as_bytes());
 
-    // partitions array: count + [partition + fetch_offset + ...]
-    buf.extend_from_slice(&1i32.to_be_bytes()); // 1 partition
-    buf.extend_from_slice(&partition.to_be_bytes());
-    buf.extend_from_slice(&(-1i64).to_be_bytes()); // current_leader_epoch
-    buf.extend_from_slice(&fetch_offset.to_be_bytes());
-    buf.extend_from_slice(&(-1i64).to_be_bytes()); // log_start_offset
-    buf.extend_from_slice(&(1024 * 1024i32).to_be_bytes()); // partition_max_bytes
+    // partitions array
+    buf.extend_from_slice(&(partitions.len() as i32).to_be_bytes());
+    for &(partition, fetch_offset) in partitions {
+        buf.extend_from_slice(&partition.to_be_bytes());
+        buf.extend_from_slice(&(-1i64).to_be_bytes()); // current_leader_epoch
+        buf.extend_from_slice(&fetch_offset.to_be_bytes());
+        buf.extend_from_slice(&(-1i64).to_be_bytes()); // log_start_offset
+        buf.extend_from_slice(&(1024 * 1024i32).to_be_bytes()); // partition_max_bytes
+    }
 
     // forgotten_topics: empty array
     buf.extend_from_slice(&0i32.to_be_bytes());
@@ -632,6 +749,19 @@ mod tests {
             pool,
             "test-topic".to_string(),
             ConsumerConfig::default(),
+            vec![0],
+        )
+    }
+
+    fn make_multi_partition_consumer() -> Consumer<String, String> {
+        let client_config = Arc::new(StreamlineConfig::default());
+        let pool = Arc::new(ConnectionPool::new(&client_config));
+        Consumer::new(
+            client_config,
+            pool,
+            "test-topic".to_string(),
+            ConsumerConfig::default(),
+            vec![0, 1, 2],
         )
     }
 
@@ -687,18 +817,73 @@ mod tests {
     #[test]
     fn test_pause_resume() {
         let consumer = make_consumer();
-        consumer.pause();
-        consumer.resume();
+        assert!(consumer.paused().is_empty());
+
+        consumer.pause(&[0]);
+        assert!(consumer.paused().contains(&0));
+
+        consumer.resume(&[0]);
+        assert!(consumer.paused().is_empty());
+    }
+
+    #[test]
+    fn test_pause_resume_multi_partition() {
+        let consumer = make_multi_partition_consumer();
+        assert_eq!(consumer.assigned_partitions(), &[0, 1, 2]);
+
+        consumer.pause(&[0, 2]);
+        assert!(consumer.paused().contains(&0));
+        assert!(!consumer.paused().contains(&1));
+        assert!(consumer.paused().contains(&2));
+
+        consumer.resume(&[0]);
+        assert!(!consumer.paused().contains(&0));
+        assert!(consumer.paused().contains(&2));
+
+        consumer.resume(&[2]);
+        assert!(consumer.paused().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_seek_multi_partition() {
+        let mut consumer = make_multi_partition_consumer();
+        consumer.subscribe().await.unwrap();
+
+        consumer.seek(1, 50).await.unwrap();
+        assert_eq!(consumer.position(1).await.unwrap(), 50);
+        assert_eq!(consumer.position(0).await.unwrap(), 0);
+        assert_eq!(consumer.position(2).await.unwrap(), 0);
+
+        consumer.seek_to_beginning().await.unwrap();
+        assert_eq!(consumer.position(0).await.unwrap(), 0);
+        assert_eq!(consumer.position(1).await.unwrap(), 0);
+        assert_eq!(consumer.position(2).await.unwrap(), 0);
+    }
+
+    #[test]
+    fn test_assigned_partitions() {
+        let consumer = make_multi_partition_consumer();
+        assert_eq!(consumer.assigned_partitions(), &[0, 1, 2]);
     }
 
     #[test]
     fn test_build_fetch_request() {
-        let request = build_fetch_request(1, "test", 0, 0, 1000);
+        let request = build_fetch_request(1, "test", &[(0, 0)], 1000);
         assert!(request.len() > 4);
         let len = i32::from_be_bytes([request[0], request[1], request[2], request[3]]);
         assert_eq!(len as usize, request.len() - 4);
         // API key should be 1 (Fetch)
         assert_eq!(request[4], 0);
         assert_eq!(request[5], 1);
+    }
+
+    #[test]
+    fn test_build_fetch_request_multi_partition() {
+        let single = build_fetch_request(1, "test", &[(0, 0)], 1000);
+        let multi = build_fetch_request(1, "test", &[(0, 0), (1, 100), (2, 200)], 1000);
+        // Multi-partition request should be larger due to additional partition entries
+        assert!(multi.len() > single.len());
+        let len = i32::from_be_bytes([multi[0], multi[1], multi[2], multi[3]]);
+        assert_eq!(len as usize, multi.len() - 4);
     }
 }
