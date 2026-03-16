@@ -107,3 +107,145 @@ impl Default for ClientMetrics {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_new_creates_zeroed_metrics() {
+        let metrics = ClientMetrics::new();
+        let snap = metrics.snapshot();
+        assert_eq!(snap.messages_produced, 0);
+        assert_eq!(snap.messages_consumed, 0);
+        assert_eq!(snap.bytes_sent, 0);
+        assert_eq!(snap.bytes_received, 0);
+        assert_eq!(snap.errors_total, 0);
+        assert_eq!(snap.produce_latency_avg_ms, 0.0);
+        assert_eq!(snap.consume_latency_avg_ms, 0.0);
+    }
+
+    #[test]
+    fn test_default_creates_zeroed_metrics() {
+        let metrics = ClientMetrics::default();
+        let snap = metrics.snapshot();
+        assert_eq!(snap.messages_produced, 0);
+        assert_eq!(snap.bytes_sent, 0);
+    }
+
+    #[test]
+    fn test_record_produce_increments_counters() {
+        let metrics = ClientMetrics::new();
+        metrics.record_produce(5, 1024, 10.0);
+        let snap = metrics.snapshot();
+        assert_eq!(snap.messages_produced, 5);
+        assert_eq!(snap.bytes_sent, 1024);
+    }
+
+    #[test]
+    fn test_record_consume_increments_counters() {
+        let metrics = ClientMetrics::new();
+        metrics.record_consume(3, 512, 5.0);
+        let snap = metrics.snapshot();
+        assert_eq!(snap.messages_consumed, 3);
+        assert_eq!(snap.bytes_received, 512);
+    }
+
+    #[test]
+    fn test_record_error_increments_counter() {
+        let metrics = ClientMetrics::new();
+        metrics.record_error();
+        metrics.record_error();
+        metrics.record_error();
+        let snap = metrics.snapshot();
+        assert_eq!(snap.errors_total, 3);
+    }
+
+    #[test]
+    fn test_snapshot_returns_correct_values() {
+        let metrics = ClientMetrics::new();
+        metrics.record_produce(2, 100, 10.0);
+        metrics.record_consume(1, 50, 5.0);
+        metrics.record_error();
+
+        let snap = metrics.snapshot();
+        assert_eq!(snap.messages_produced, 2);
+        assert_eq!(snap.messages_consumed, 1);
+        assert_eq!(snap.bytes_sent, 100);
+        assert_eq!(snap.bytes_received, 50);
+        assert_eq!(snap.errors_total, 1);
+    }
+
+    #[test]
+    fn test_produce_latency_average() {
+        let metrics = ClientMetrics::new();
+        metrics.record_produce(1, 100, 10.0);
+        metrics.record_produce(1, 100, 20.0);
+        metrics.record_produce(1, 100, 30.0);
+        let snap = metrics.snapshot();
+        assert!((snap.produce_latency_avg_ms - 20.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_consume_latency_average() {
+        let metrics = ClientMetrics::new();
+        metrics.record_consume(1, 50, 4.0);
+        metrics.record_consume(1, 50, 8.0);
+        let snap = metrics.snapshot();
+        assert!((snap.consume_latency_avg_ms - 6.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_latency_avg_zero_when_no_records() {
+        let metrics = ClientMetrics::new();
+        let snap = metrics.snapshot();
+        assert_eq!(snap.produce_latency_avg_ms, 0.0);
+        assert_eq!(snap.consume_latency_avg_ms, 0.0);
+    }
+
+    #[test]
+    fn test_multiple_operations_accumulate() {
+        let metrics = ClientMetrics::new();
+        for _ in 0..100 {
+            metrics.record_produce(1, 64, 1.0);
+        }
+        for _ in 0..50 {
+            metrics.record_consume(2, 128, 2.0);
+        }
+        for _ in 0..10 {
+            metrics.record_error();
+        }
+        let snap = metrics.snapshot();
+        assert_eq!(snap.messages_produced, 100);
+        assert_eq!(snap.bytes_sent, 6400);
+        assert_eq!(snap.messages_consumed, 100);
+        assert_eq!(snap.bytes_received, 6400);
+        assert_eq!(snap.errors_total, 10);
+    }
+
+    #[test]
+    fn test_uptime_is_nonzero() {
+        let metrics = ClientMetrics::new();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let snap = metrics.snapshot();
+        assert!(snap.uptime_ms >= 1);
+    }
+
+    #[test]
+    fn test_metrics_snapshot_clone() {
+        let metrics = ClientMetrics::new();
+        metrics.record_produce(1, 100, 5.0);
+        let snap = metrics.snapshot();
+        let snap2 = snap.clone();
+        assert_eq!(snap.messages_produced, snap2.messages_produced);
+        assert_eq!(snap.bytes_sent, snap2.bytes_sent);
+    }
+
+    #[test]
+    fn test_thread_safety() {
+        fn assert_send<T: Send>() {}
+        fn assert_sync<T: Sync>() {}
+        assert_send::<ClientMetrics>();
+        assert_sync::<ClientMetrics>();
+    }
+}

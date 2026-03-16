@@ -63,3 +63,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Apache 2.0 license
 - feat: implement telemetry span propagation in producer
 - refactor: consolidate error handling types in consumer module
+- feat: add metrics histogram for tail latency tracking
