@@ -62,3 +62,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Type-safe generic producer and consumer
 - Apache 2.0 license
 - feat: implement telemetry span propagation in producer
+- refactor: consolidate error handling types in consumer module

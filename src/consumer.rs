@@ -11,9 +11,19 @@ use crate::telemetry;
 use crate::Headers;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicI32, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
+
+fn lock_mutex<T>(mutex: &Mutex<T>) -> Result<MutexGuard<'_, T>> {
+    mutex.lock().map_err(|_: PoisonError<MutexGuard<'_, T>>| {
+        Error::new(
+            ErrorKind::Internal,
+            "Internal lock poisoned — a previous operation panicked",
+        )
+        .with_hint("This indicates a bug in the client. Please report it.")
+    })
+}
 
 /// A record received from a consumer poll.
 #[derive(Debug, Clone)]
@@ -128,7 +138,7 @@ impl<K, V> Consumer<K, V> {
             } else {
                 -1
             };
-            let mut offsets = self.partition_offsets.lock().unwrap();
+            let mut offsets = lock_mutex(&self.partition_offsets)?;
             for &p in &self.partitions {
                 offsets.entry(p).or_insert(initial_offset);
             }
@@ -161,8 +171,8 @@ impl<K, V> Consumer<K, V> {
 
         // Collect active (non-paused) partitions with their current offsets
         let active_partitions: Vec<(i32, i64)> = {
-            let paused = self.paused_partitions.lock().unwrap();
-            let offsets = self.partition_offsets.lock().unwrap();
+            let paused = lock_mutex(&self.paused_partitions)?;
+            let offsets = lock_mutex(&self.partition_offsets)?;
             self.partitions
                 .iter()
                 .filter(|p| !paused.contains(p))
@@ -210,7 +220,7 @@ impl<K, V> Consumer<K, V> {
 
         // Advance per-partition fetch offsets past consumed records
         if !records.is_empty() {
-            let mut offsets = self.partition_offsets.lock().unwrap();
+            let mut offsets = lock_mutex(&self.partition_offsets)?;
             for record in &records {
                 let entry = offsets.entry(record.partition).or_insert(0);
                 if record.offset + 1 > *entry {
@@ -233,7 +243,7 @@ impl<K, V> Consumer<K, V> {
             }
         };
 
-        let offsets: HashMap<i32, i64> = self.partition_offsets.lock().unwrap().clone();
+        let offsets: HashMap<i32, i64> = lock_mutex(&self.partition_offsets)?.clone();
 
         for (&partition, &offset) in &offsets {
             debug!(
@@ -260,6 +270,12 @@ impl<K, V> Consumer<K, V> {
 
             let resp_len = stream.read_i32().await
                 .map_err(|e| Error::connection(format!("Commit read failed: {e}")))?;
+            if resp_len <= 0 || resp_len > 100_000_000 {
+                return Err(Error::new(
+                    ErrorKind::Protocol,
+                    format!("Invalid commit response length from server: {resp_len}"),
+                ));
+            }
             let mut resp_buf = vec![0u8; resp_len as usize];
             stream.read_exact(&mut resp_buf).await
                 .map_err(|e| Error::connection(format!("Commit read body failed: {e}")))?;
@@ -296,7 +312,13 @@ impl<K, V> Consumer<K, V> {
                 return;
             }
         };
-        let offsets: HashMap<i32, i64> = self.partition_offsets.lock().unwrap().clone();
+        let offsets: HashMap<i32, i64> = match lock_mutex(&self.partition_offsets) {
+            Ok(guard) => guard.clone(),
+            Err(e) => {
+                warn!("Async commit: failed to acquire offsets lock: {}", e);
+                return;
+            }
+        };
         let topic = self.topic.clone();
         let pool = self.pool.clone();
         let correlation_id = self.next_correlation_id();
@@ -321,7 +343,7 @@ impl<K, V> Consumer<K, V> {
                                     continue;
                                 }
                                 match stream.read_i32().await {
-                                    Ok(resp_len) if resp_len > 0 => {
+                                    Ok(resp_len) if resp_len > 0 && resp_len <= 100_000_000 => {
                                         let mut buf = vec![0u8; resp_len as usize];
                                         let _ = stream.read_exact(&mut buf).await;
                                     }
@@ -343,7 +365,7 @@ impl<K, V> Consumer<K, V> {
 
     /// Seeks to the beginning of all partitions.
     pub async fn seek_to_beginning(&self) -> Result<()> {
-        let mut offsets = self.partition_offsets.lock().unwrap();
+        let mut offsets = lock_mutex(&self.partition_offsets)?;
         for offset in offsets.values_mut() {
             *offset = 0;
         }
@@ -353,7 +375,7 @@ impl<K, V> Consumer<K, V> {
 
     /// Seeks to the end of all partitions.
     pub async fn seek_to_end(&self) -> Result<()> {
-        let mut offsets = self.partition_offsets.lock().unwrap();
+        let mut offsets = lock_mutex(&self.partition_offsets)?;
         for offset in offsets.values_mut() {
             *offset = -1;
         }
@@ -363,7 +385,7 @@ impl<K, V> Consumer<K, V> {
 
     /// Seeks to a specific offset for a partition.
     pub async fn seek(&self, partition: i32, offset: i64) -> Result<()> {
-        let mut offsets = self.partition_offsets.lock().unwrap();
+        let mut offsets = lock_mutex(&self.partition_offsets)?;
         offsets.insert(partition, offset);
         debug!("Seeking partition {} to offset {}", partition, offset);
         Ok(())
@@ -371,32 +393,34 @@ impl<K, V> Consumer<K, V> {
 
     /// Returns the current position for a partition.
     pub async fn position(&self, partition: i32) -> Result<i64> {
-        let offsets = self.partition_offsets.lock().unwrap();
+        let offsets = lock_mutex(&self.partition_offsets)?;
         Ok(offsets.get(&partition).copied().unwrap_or(0))
     }
 
     /// Pauses consumption for the specified partitions.
     /// Paused partitions are skipped during `poll()`.
-    pub fn pause(&self, partitions: &[i32]) {
-        let mut paused = self.paused_partitions.lock().unwrap();
+    pub fn pause(&self, partitions: &[i32]) -> Result<()> {
+        let mut paused = lock_mutex(&self.paused_partitions)?;
         for &p in partitions {
             paused.insert(p);
         }
         debug!("Paused partitions: {:?}", *paused);
+        Ok(())
     }
 
     /// Resumes consumption for the specified partitions.
-    pub fn resume(&self, partitions: &[i32]) {
-        let mut paused = self.paused_partitions.lock().unwrap();
+    pub fn resume(&self, partitions: &[i32]) -> Result<()> {
+        let mut paused = lock_mutex(&self.paused_partitions)?;
         for &p in partitions {
             paused.remove(&p);
         }
         debug!("Resumed partitions, still paused: {:?}", *paused);
+        Ok(())
     }
 
     /// Returns the set of currently paused partitions.
-    pub fn paused(&self) -> HashSet<i32> {
-        self.paused_partitions.lock().unwrap().clone()
+    pub fn paused(&self) -> Result<HashSet<i32>> {
+        Ok(lock_mutex(&self.paused_partitions)?.clone())
     }
 
     /// Returns the list of assigned partitions.
@@ -817,13 +841,13 @@ mod tests {
     #[test]
     fn test_pause_resume() {
         let consumer = make_consumer();
-        assert!(consumer.paused().is_empty());
+        assert!(consumer.paused().unwrap().is_empty());
 
-        consumer.pause(&[0]);
-        assert!(consumer.paused().contains(&0));
+        consumer.pause(&[0]).unwrap();
+        assert!(consumer.paused().unwrap().contains(&0));
 
-        consumer.resume(&[0]);
-        assert!(consumer.paused().is_empty());
+        consumer.resume(&[0]).unwrap();
+        assert!(consumer.paused().unwrap().is_empty());
     }
 
     #[test]
@@ -831,17 +855,17 @@ mod tests {
         let consumer = make_multi_partition_consumer();
         assert_eq!(consumer.assigned_partitions(), &[0, 1, 2]);
 
-        consumer.pause(&[0, 2]);
-        assert!(consumer.paused().contains(&0));
-        assert!(!consumer.paused().contains(&1));
-        assert!(consumer.paused().contains(&2));
+        consumer.pause(&[0, 2]).unwrap();
+        assert!(consumer.paused().unwrap().contains(&0));
+        assert!(!consumer.paused().unwrap().contains(&1));
+        assert!(consumer.paused().unwrap().contains(&2));
 
-        consumer.resume(&[0]);
-        assert!(!consumer.paused().contains(&0));
-        assert!(consumer.paused().contains(&2));
+        consumer.resume(&[0]).unwrap();
+        assert!(!consumer.paused().unwrap().contains(&0));
+        assert!(consumer.paused().unwrap().contains(&2));
 
-        consumer.resume(&[2]);
-        assert!(consumer.paused().is_empty());
+        consumer.resume(&[2]).unwrap();
+        assert!(consumer.paused().unwrap().is_empty());
     }
 
     #[tokio::test]
