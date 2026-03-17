@@ -64,3 +64,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - feat: implement telemetry span propagation in producer
 - refactor: consolidate error handling types in consumer module
 - feat: add metrics histogram for tail latency tracking
+- refactor: clean up query builder public API surface
