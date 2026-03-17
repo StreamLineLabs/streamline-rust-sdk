@@ -289,4 +289,148 @@ mod tests {
         let client = SchemaRegistryClient::new("http://localhost:9094/");
         assert_eq!(client.base_url(), "http://localhost:9094");
     }
+
+    #[test]
+    fn test_schema_registry_strips_multiple_trailing_slashes() {
+        let client = SchemaRegistryClient::new("http://localhost:9094///");
+        assert_eq!(client.base_url(), "http://localhost:9094");
+    }
+
+    #[test]
+    fn test_schema_type_serialize_avro() {
+        let json = serde_json::to_value(SchemaType::Avro).expect("serialize");
+        assert_eq!(json, "AVRO");
+    }
+
+    #[test]
+    fn test_schema_type_serialize_protobuf() {
+        let json = serde_json::to_value(SchemaType::Protobuf).expect("serialize");
+        assert_eq!(json, "PROTOBUF");
+    }
+
+    #[test]
+    fn test_schema_type_serialize_json() {
+        let json = serde_json::to_value(SchemaType::Json).expect("serialize");
+        assert_eq!(json, "JSON");
+    }
+
+    #[test]
+    fn test_schema_type_deserialize() {
+        let avro: SchemaType = serde_json::from_str("\"AVRO\"").expect("deserialize");
+        assert!(matches!(avro, SchemaType::Avro));
+        let proto: SchemaType = serde_json::from_str("\"PROTOBUF\"").expect("deserialize");
+        assert!(matches!(proto, SchemaType::Protobuf));
+        let json_type: SchemaType = serde_json::from_str("\"JSON\"").expect("deserialize");
+        assert!(matches!(json_type, SchemaType::Json));
+    }
+
+    #[test]
+    fn test_schema_type_roundtrip() {
+        for st in [SchemaType::Avro, SchemaType::Protobuf, SchemaType::Json] {
+            let serialized = serde_json::to_string(&st).expect("serialize");
+            let deserialized: SchemaType = serde_json::from_str(&serialized).expect("deserialize");
+            assert_eq!(
+                serde_json::to_string(&st).unwrap(),
+                serde_json::to_string(&deserialized).unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn test_schema_struct_serialization() {
+        let schema = Schema {
+            id: Some(1),
+            subject: Some("orders-value".to_string()),
+            version: Some(3),
+            schema_type: SchemaType::Avro,
+            schema: r#"{"type":"record","name":"Order"}"#.to_string(),
+        };
+        let json = serde_json::to_value(&schema).expect("serialize");
+        assert_eq!(json["id"], 1);
+        assert_eq!(json["subject"], "orders-value");
+        assert_eq!(json["version"], 3);
+        assert_eq!(json["schemaType"], "AVRO");
+        assert_eq!(json["schema"], r#"{"type":"record","name":"Order"}"#);
+    }
+
+    #[test]
+    fn test_schema_struct_with_none_fields() {
+        let schema = Schema {
+            id: None,
+            subject: None,
+            version: None,
+            schema_type: SchemaType::Json,
+            schema: "{}".to_string(),
+        };
+        let json = serde_json::to_value(&schema).expect("serialize");
+        assert!(json["id"].is_null());
+        assert!(json["subject"].is_null());
+        assert!(json["version"].is_null());
+        assert_eq!(json["schemaType"], "JSON");
+    }
+
+    #[test]
+    fn test_schema_deserialization() {
+        let json = serde_json::json!({
+            "id": 42,
+            "subject": "events-value",
+            "version": 1,
+            "schemaType": "PROTOBUF",
+            "schema": "syntax = \"proto3\";"
+        });
+        let schema: Schema = serde_json::from_value(json).expect("deserialize");
+        assert_eq!(schema.id, Some(42));
+        assert_eq!(schema.subject.as_deref(), Some("events-value"));
+        assert_eq!(schema.version, Some(1));
+        assert!(matches!(schema.schema_type, SchemaType::Protobuf));
+        assert_eq!(schema.schema, "syntax = \"proto3\";");
+    }
+
+    #[test]
+    fn test_register_schema_request_serialization() {
+        let req = RegisterSchemaRequest {
+            schema: r#"{"type":"string"}"#.to_string(),
+            schema_type: SchemaType::Json,
+        };
+        let json = serde_json::to_value(&req).expect("serialize");
+        assert_eq!(json["schema"], r#"{"type":"string"}"#);
+        assert_eq!(json["schemaType"], "JSON");
+    }
+
+    #[test]
+    fn test_register_schema_response_deserialization() {
+        let json = serde_json::json!({"id": 7});
+        let resp: RegisterSchemaResponse = serde_json::from_value(json).expect("deserialize");
+        assert_eq!(resp.id, 7);
+    }
+
+    #[test]
+    fn test_compatibility_result_compatible() {
+        let json = serde_json::json!({"is_compatible": true});
+        let result: CompatibilityResult = serde_json::from_value(json).expect("deserialize");
+        assert!(result.is_compatible);
+    }
+
+    #[test]
+    fn test_compatibility_result_incompatible() {
+        let json = serde_json::json!({"is_compatible": false});
+        let result: CompatibilityResult = serde_json::from_value(json).expect("deserialize");
+        assert!(!result.is_compatible);
+    }
+
+    #[test]
+    fn test_schema_clone() {
+        let schema = Schema {
+            id: Some(1),
+            subject: Some("test".to_string()),
+            version: Some(1),
+            schema_type: SchemaType::Avro,
+            schema: "test".to_string(),
+        };
+        let cloned = schema.clone();
+        assert_eq!(
+            serde_json::to_string(&schema).unwrap(),
+            serde_json::to_string(&cloned).unwrap()
+        );
+    }
 }

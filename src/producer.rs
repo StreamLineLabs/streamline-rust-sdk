@@ -236,6 +236,12 @@ impl<K: AsRef<[u8]> + Send, V: AsRef<[u8]> + Send> Producer<K, V> {
 
         let resp_len = stream.read_i32().await
             .map_err(|e| Error::connection(format!("Read failed: {e}")))?;
+        if resp_len <= 0 || resp_len > 100_000_000 {
+            return Err(Error::new(
+                ErrorKind::Protocol,
+                format!("Invalid response length from server: {resp_len}"),
+            ));
+        }
         let mut resp_buf = vec![0u8; resp_len as usize];
         stream.read_exact(&mut resp_buf).await
             .map_err(|e| Error::connection(format!("Read body failed: {e}")))?;
@@ -353,6 +359,14 @@ impl<K: AsRef<[u8]> + Send, V: AsRef<[u8]> + Send> Producer<K, V> {
                     return Err(err);
                 }
             };
+            if resp_len <= 0 || resp_len > 100_000_000 {
+                let err = Error::new(
+                    ErrorKind::Protocol,
+                    format!("Invalid response length from server: {resp_len}"),
+                );
+                if attempt < max_retries { last_err = Some(err); continue; }
+                return Err(err);
+            }
             let mut resp_buf = vec![0u8; resp_len as usize];
             if let Err(e) = stream.read_exact(&mut resp_buf).await {
                 let err = Error::connection(format!("Read body failed: {e}"));
