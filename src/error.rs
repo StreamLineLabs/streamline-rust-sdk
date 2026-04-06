@@ -36,6 +36,22 @@ pub enum ErrorKind {
     Internal,
     /// Transaction error
     Transaction,
+    /// Operation is recognized but not yet implemented in this SDK build.
+    ///
+    /// Returned by admin operations whose Kafka-protocol wiring is still
+    /// pending. Surfacing this loudly avoids the "silent success" trap where
+    /// callers think `create_topic` worked but no frame was sent.
+    Unsupported,
+    /// Record violated a topic's data contract.
+    ContractViolation,
+    /// Attestation signature verification failed.
+    AttestationFailed,
+    /// Agent lacks permission to access memory.
+    MemoryAccessDenied,
+    /// Branch exceeded its storage or lifetime quota.
+    BranchQuotaExceeded,
+    /// Semantic search is unavailable (embedding provider down).
+    SemanticSearchUnavailable,
 }
 
 /// Error type for Streamline client operations.
@@ -123,11 +139,70 @@ impl Error {
         Self::new(ErrorKind::Transaction, message)
     }
 
+    /// Creates an "operation not yet implemented in this SDK" error.
+    ///
+    /// Use for admin/protocol operations whose wiring is still pending.
+    pub fn unsupported(operation: &str) -> Self {
+        Self::new(
+            ErrorKind::Unsupported,
+            format!("Operation '{}' is not yet implemented in the Rust SDK", operation),
+        )
+        .with_hint(
+            "Track progress at https://github.com/streamlinelabs/streamline-rust-sdk \
+             or use a sibling SDK (Java/Go/Python/Node) for full admin parity.",
+        )
+    }
+
+    /// Creates a contract violation error.
+    pub fn contract_violation(topic: &str, details: &str) -> Self {
+        Self::new(
+            ErrorKind::ContractViolation,
+            format!("Contract violation on topic '{}': {}", topic, details),
+        )
+        .with_hint("Validate the record against the topic's registered schema")
+    }
+
+    /// Creates an attestation verification error.
+    pub fn attestation_failed(details: &str) -> Self {
+        Self::new(
+            ErrorKind::AttestationFailed,
+            format!("Attestation verification failed: {}", details),
+        )
+        .with_hint("Check the signing key and attestation configuration")
+    }
+
+    /// Creates a memory access denied error.
+    pub fn memory_access_denied(agent: &str) -> Self {
+        Self::new(
+            ErrorKind::MemoryAccessDenied,
+            format!("Memory access denied for agent: {}", agent),
+        )
+        .with_hint("Verify agent permissions for memory operations")
+    }
+
+    /// Creates a branch quota exceeded error.
+    pub fn branch_quota_exceeded(branch: &str, details: &str) -> Self {
+        Self::new(
+            ErrorKind::BranchQuotaExceeded,
+            format!("Branch quota exceeded for '{}': {}", branch, details),
+        )
+        .with_hint("Increase branch quotas or clean up unused branches")
+    }
+
+    /// Creates a semantic search unavailable error.
+    pub fn semantic_search_unavailable(details: &str) -> Self {
+        Self::new(
+            ErrorKind::SemanticSearchUnavailable,
+            format!("Semantic search unavailable: {}", details),
+        )
+        .with_hint("Check embedding provider connectivity and configuration")
+    }
+
     /// Returns true if this error is transient and the operation can be retried.
     pub fn is_retryable(&self) -> bool {
         matches!(
             self.kind,
-            ErrorKind::Connection | ErrorKind::ConnectionFailed | ErrorKind::Timeout | ErrorKind::Server
+            ErrorKind::Connection | ErrorKind::ConnectionFailed | ErrorKind::Timeout | ErrorKind::Server | ErrorKind::SemanticSearchUnavailable
         )
     }
 }

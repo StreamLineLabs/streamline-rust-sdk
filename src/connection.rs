@@ -136,6 +136,13 @@ impl ConnectionPool {
     }
 
     // -- Admin operations (delegated from Admin client) --
+    //
+    // NOTE: These operations are stubs pending Kafka-protocol wiring (see
+    // Roadmap item #4 in DX_AUDIT.md). They previously returned `Ok(default)`
+    // which silently misled callers into believing a topic had been created
+    // when no frame was ever sent. They now fail loudly with
+    // `ErrorKind::Unsupported` so calling code surfaces the gap rather than
+    // hiding it.
 
     pub(crate) async fn create_topic(
         &self,
@@ -145,57 +152,59 @@ impl ConnectionPool {
         config: &std::collections::HashMap<String, String>,
     ) -> Result<()> {
         let _conn = self.get().await?;
-        // TODO: send CreateTopics request via Kafka protocol
-        debug!("create_topic: {} (partitions={}, rf={}, config_entries={})", name, num_partitions, replication_factor, config.len());
-        Ok(())
+        warn!(
+            "create_topic stub invoked: name={} partitions={} rf={} config_entries={}",
+            name, num_partitions, replication_factor, config.len()
+        );
+        Err(Error::unsupported("admin.create_topic"))
     }
 
     pub(crate) async fn delete_topic(&self, name: &str) -> Result<()> {
         let _conn = self.get().await?;
-        debug!("delete_topic: {}", name);
-        Ok(())
+        warn!("delete_topic stub invoked: {}", name);
+        Err(Error::unsupported("admin.delete_topic"))
     }
 
     pub(crate) async fn list_topics(&self) -> Result<Vec<crate::admin::TopicInfo>> {
         let _conn = self.get().await?;
-        debug!("list_topics");
-        Ok(vec![])
+        warn!("list_topics stub invoked");
+        Err(Error::unsupported("admin.list_topics"))
     }
 
     pub(crate) async fn describe_topic(&self, name: &str) -> Result<(crate::admin::TopicInfo, Vec<crate::admin::PartitionInfo>)> {
         let _conn = self.get().await?;
-        debug!("describe_topic: {}", name);
-        Err(Error::topic_not_found(name))
+        warn!("describe_topic stub invoked: {}", name);
+        Err(Error::unsupported("admin.describe_topic"))
     }
 
     pub(crate) async fn add_partitions(&self, name: &str, total_count: i32) -> Result<()> {
         let _conn = self.get().await?;
-        debug!("add_partitions: {} -> {}", name, total_count);
-        Ok(())
+        warn!("add_partitions stub invoked: {} -> {}", name, total_count);
+        Err(Error::unsupported("admin.add_partitions"))
     }
 
     pub(crate) async fn list_consumer_groups(&self) -> Result<Vec<String>> {
         let _conn = self.get().await?;
-        debug!("list_consumer_groups");
-        Ok(vec![])
+        warn!("list_consumer_groups stub invoked");
+        Err(Error::unsupported("admin.list_consumer_groups"))
     }
 
     pub(crate) async fn describe_consumer_group(&self, group_id: &str) -> Result<crate::admin::ConsumerGroupInfo> {
         let _conn = self.get().await?;
-        debug!("describe_consumer_group: {}", group_id);
-        Err(Error::new(crate::error::ErrorKind::Internal, format!("Consumer group not found: {}", group_id)))
+        warn!("describe_consumer_group stub invoked: {}", group_id);
+        Err(Error::unsupported("admin.describe_consumer_group"))
     }
 
     pub(crate) async fn delete_consumer_group(&self, group_id: &str) -> Result<()> {
         let _conn = self.get().await?;
-        debug!("delete_consumer_group: {}", group_id);
-        Ok(())
+        warn!("delete_consumer_group stub invoked: {}", group_id);
+        Err(Error::unsupported("admin.delete_consumer_group"))
     }
 
     pub(crate) async fn list_brokers(&self) -> Result<Vec<crate::admin::BrokerInfo>> {
         let _conn = self.get().await?;
-        debug!("list_brokers");
-        Ok(vec![])
+        warn!("list_brokers stub invoked");
+        Err(Error::unsupported("admin.list_brokers"))
     }
 }
 

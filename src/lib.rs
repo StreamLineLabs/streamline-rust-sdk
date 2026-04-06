@@ -38,13 +38,17 @@ pub use client::Streamline;
 pub use config::{StreamlineConfig, ConsumerConfig, ProducerConfig, TlsConfig, SaslConfig, SaslMechanism, SecurityProtocol};
 pub mod schema;
 pub mod query;
+#[cfg(feature = "moonshot")]
+pub mod moonshot;
+#[cfg(feature = "attestation")]
+pub mod verifier;
 pub use circuit_breaker::{CircuitBreaker, CircuitBreakerConfig, CircuitState};
 pub use connection::ConnectionPool;
-pub use consumer::{Consumer, ConsumerRecord};
+pub use consumer::{Consumer, ConsumerRecord, SearchResult};
 pub use error::{Error, ErrorKind, Result};
 pub use producer::{Producer, ProducerRecord, RecordMetadata};
 pub use metrics::{ClientMetrics, MetricsSnapshot};
-pub use admin::{Admin, TopicConfig, TopicInfo, PartitionInfo, BrokerInfo, ConsumerGroupInfo, HttpAdmin, ClusterInfo, ClusterBrokerInfo, ConsumerGroupLag, ConsumerLag, InspectedMessage, MetricPoint};
+pub use admin::{Admin, TopicConfig, TopicInfo, PartitionInfo, BrokerInfo, ConsumerGroupInfo, HttpAdmin, ClusterInfo, ClusterBrokerInfo, ConsumerGroupLag, ConsumerLag, InspectedMessage, MetricPoint, BranchInfo};
 
 /// Message headers.
 pub mod headers {

@@ -307,6 +307,25 @@ pub struct MetricPoint {
     pub timestamp: i64,
 }
 
+/// Information about a copy-on-write topic branch (M5, Experimental).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct BranchInfo {
+    /// Branch name.
+    pub name: String,
+    /// The base topic this branch forks from.
+    pub base_topic: String,
+    /// Branch state (`active`, `discarded`, `merged`).
+    #[serde(default = "default_branch_state")]
+    pub state: String,
+    /// Creation timestamp (epoch milliseconds).
+    #[serde(default)]
+    pub created_at: u64,
+}
+
+fn default_branch_state() -> String {
+    "active".to_string()
+}
+
 /// HTTP-based admin client for expanded operations.
 ///
 /// Communicates with the Streamline HTTP REST API (default port 9094)
@@ -387,6 +406,37 @@ impl HttpAdmin {
         self.get("/v1/metrics/history").await
     }
 
+    /// Creates a copy-on-write branch of a topic (M5).
+    pub async fn create_branch(
+        &self,
+        name: &str,
+        base_topic: &str,
+        base_offsets: Option<&HashMap<i32, i64>>,
+    ) -> Result<BranchInfo> {
+        let mut body = serde_json::json!({
+            "name": name,
+            "base_topic": base_topic,
+        });
+        if let Some(offsets) = base_offsets {
+            body["base_offsets"] = serde_json::to_value(offsets).unwrap_or_default();
+        }
+        self.post("/v1/branches", &body).await
+    }
+
+    /// Lists copy-on-write topic branches (M5).
+    pub async fn list_branches(&self, topic: Option<&str>) -> Result<Vec<BranchInfo>> {
+        let path = match topic {
+            Some(t) => format!("/v1/branches?topic={}", t),
+            None => "/v1/branches".to_string(),
+        };
+        self.get(&path).await
+    }
+
+    /// Discards (deletes) a copy-on-write topic branch (M5).
+    pub async fn discard_branch(&self, branch_id: &str) -> Result<()> {
+        self.delete(&format!("/v1/branches/{}", branch_id)).await
+    }
+
     async fn get<T: serde::de::DeserializeOwned>(&self, path: &str) -> Result<T> {
         let url = format!("{}{}", self.base_url, path);
         let resp = self.client.get(&url).send().await.map_err(|e| {
@@ -405,6 +455,48 @@ impl HttpAdmin {
         resp.json().await.map_err(|e| {
             Error::new(ErrorKind::Serialization, format!("JSON decode failed: {}", e))
         })
+    }
+
+    async fn post<T: serde::de::DeserializeOwned, B: serde::Serialize>(
+        &self,
+        path: &str,
+        body: &B,
+    ) -> Result<T> {
+        let url = format!("{}{}", self.base_url, path);
+        let resp = self.client.post(&url).json(body).send().await.map_err(|e| {
+            Error::new(ErrorKind::Connection, format!("HTTP request failed: {}", e))
+        })?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(Error::new(
+                ErrorKind::Server,
+                format!("HTTP {}: {}", status, text),
+            ));
+        }
+
+        resp.json().await.map_err(|e| {
+            Error::new(ErrorKind::Serialization, format!("JSON decode failed: {}", e))
+        })
+    }
+
+    async fn delete(&self, path: &str) -> Result<()> {
+        let url = format!("{}{}", self.base_url, path);
+        let resp = self.client.delete(&url).send().await.map_err(|e| {
+            Error::new(ErrorKind::Connection, format!("HTTP request failed: {}", e))
+        })?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(Error::new(
+                ErrorKind::Server,
+                format!("HTTP {}: {}", status, text),
+            ));
+        }
+
+        Ok(())
     }
 }
 
@@ -479,5 +571,18 @@ mod tests {
         };
         assert_eq!(info.group_id, "my-group");
         assert_eq!(info.members, 3);
+    }
+
+    #[test]
+    fn test_branch_info() {
+        let info = BranchInfo {
+            name: "experiment-a".to_string(),
+            base_topic: "orders".to_string(),
+            state: "active".to_string(),
+            created_at: 1700000000000,
+        };
+        assert_eq!(info.name, "experiment-a");
+        assert_eq!(info.base_topic, "orders");
+        assert_eq!(info.state, "active");
     }
 }

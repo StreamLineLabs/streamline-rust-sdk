@@ -25,6 +25,29 @@ fn lock_mutex<T>(mutex: &Mutex<T>) -> Result<MutexGuard<'_, T>> {
     })
 }
 
+/// A single search result from a topic.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct SearchResult {
+    /// Partition number of the matching record.
+    pub partition: i32,
+    /// Record offset.
+    pub offset: i64,
+    /// Similarity score (higher = more relevant).
+    pub score: f64,
+    /// Record value, if returned by the server.
+    pub value: Option<serde_json::Value>,
+}
+
+/// Internal response from the search API.
+#[derive(Debug, serde::Deserialize)]
+struct SearchResponse {
+    #[serde(default)]
+    hits: Vec<SearchResult>,
+    #[serde(default)]
+    #[allow(dead_code)]
+    took_ms: u64,
+}
+
 /// A record received from a consumer poll.
 #[derive(Debug, Clone)]
 pub struct ConsumerRecord<K, V> {
@@ -441,6 +464,68 @@ impl<K, V> Consumer<K, V> {
     /// Returns whether the consumer is subscribed.
     pub fn is_subscribed(&self) -> bool {
         self.subscribed
+    }
+
+    /// Performs a semantic search against a topic via the HTTP API.
+    ///
+    /// Sends a `POST /api/v1/topics/{topic}/search` request to the Streamline
+    /// HTTP admin port (default 9094). Requires the `schema-registry` or
+    /// `moonshot` feature to be enabled (both pull in `reqwest`).
+    ///
+    /// # Arguments
+    /// * `topic` – Topic to search.
+    /// * `query` – Free-text search query.
+    /// * `k` – Maximum number of results.
+    ///
+    /// # Errors
+    /// Returns an error if the HTTP request fails or the server returns a
+    /// non-200 status.
+    #[cfg(any(feature = "schema-registry", feature = "moonshot"))]
+    pub async fn search(&self, topic: &str, query: &str, k: usize) -> Result<Vec<SearchResult>> {
+        let host = self
+            .client_config
+            .bootstrap_servers
+            .split(',')
+            .next()
+            .unwrap_or("localhost")
+            .split(':')
+            .next()
+            .unwrap_or("localhost");
+        let base_url = format!("http://{}:9094", host);
+
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .map_err(|e| Error::new(ErrorKind::Connection, format!("HTTP client error: {}", e)))?;
+
+        let url = format!("{}/api/v1/topics/{}/search", base_url, topic);
+        let body = serde_json::json!({
+            "query": query,
+            "k": k,
+        });
+
+        let resp = client
+            .post(&url)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| Error::new(ErrorKind::Connection, format!("Search request failed: {}", e)))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(Error::new(
+                ErrorKind::Server,
+                format!("Search failed (HTTP {}): {}", status, text),
+            ));
+        }
+
+        let data: SearchResponse = resp
+            .json()
+            .await
+            .map_err(|e| Error::new(ErrorKind::Serialization, format!("JSON decode failed: {}", e)))?;
+
+        Ok(data.hits)
     }
 }
 

@@ -18,10 +18,12 @@ compression-lz4 = ["lz4_flex"]
 compression-zstd = ["zstd"]
 compression-snappy = ["snap"]
 tls = ["tokio-rustls", "rustls-pemfile", "rustls"]
-sasl = ["sha2", "hmac", "pbkdf2", "base64"]
+sasl = ["dep:sha2", "dep:hmac", "dep:pbkdf2", "dep:base64"]
 telemetry = ["opentelemetry", "opentelemetry_sdk", "tracing-opentelemetry"]
 schema-registry = ["reqwest"]
 schema-registry-tls = ["schema-registry", "reqwest/rustls-tls"]
+moonshot = ["reqwest", "dep:base64"]
+attestation = ["dep:ed25519-dalek", "dep:base64"]
 
 [dependencies]
 # Async runtime
@@ -57,6 +59,9 @@ hmac = { version = "0.12", optional = true }
 pbkdf2 = { version = "0.12", optional = true }
 base64 = { version = "0.22", optional = true }
 
+# Attestation verification (optional)
+ed25519-dalek = { version = "2.1", optional = true }
+
 # Telemetry (optional)
 opentelemetry = { version = "0.22", optional = true }
 opentelemetry_sdk = { version = "0.22", optional = true }
@@ -72,6 +77,12 @@ reqwest = { version = "0.12", features = ["json"], default-features = false, opt
 [dev-dependencies]
 tokio-test = "0.4"
 tracing-subscriber = "0.3"
+wiremock = "0.6"
+ed25519-dalek = { version = "2.1", features = ["rand_core"] }
+base64 = "0.22"
+sha2 = "0.10"
+hex = "0.4"
+rand = "0.8"
 
 [[example]]
 name = "producer"
