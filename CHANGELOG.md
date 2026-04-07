@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- New `moonshot` Cargo feature exposing async HTTP clients for the Streamline
+  Moonshot control plane (port `9094`):
+  - `BranchesClient`, `ContractsClient`, `AttestationClient`, `SearchClient`,
+    `MemoryClient` under `streamline_sdk::moonshot`.
+- Shared `MoonshotOptions` + `MoonshotError`.
+
+### Added
 - `HttpAdmin` client for expanded admin operations via HTTP REST API (reqwest-based)
 - `HttpAdmin::cluster_info()` — cluster overview including broker list
 - `HttpAdmin::consumer_group_lag()` / `consumer_group_topic_lag()` — consumer group lag monitoring

@@ -1,0 +1,41 @@
+name: Integration Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '0 4 * * 1' # Weekly Monday 4am UTC
+  workflow_dispatch:
+
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    services:
+      streamline:
+        image: ghcr.io/streamlinelabs/streamline:latest
+        ports:
+          - 9092:9092
+          - 9094:9094
+        options: >-
+          --health-cmd "curl -f http://localhost:9094/health || exit 1"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Wait for Streamline
+        run: |
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:9094/health && break
+            echo "Waiting for Streamline... ($i/30)"
+            sleep 2
+          done
+      - name: Run integration tests
+        run: cargo test --tests --features integration -- --include-ignored
+        env:
+          STREAMLINE_BOOTSTRAP_SERVERS: localhost:9092
+          STREAMLINE_HTTP_URL: http://localhost:9094

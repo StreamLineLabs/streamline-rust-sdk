@@ -5,6 +5,7 @@
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-1.80%2B-orange.svg)](https://www.rust-lang.org/)
 [![Docs](https://img.shields.io/badge/docs-streamlinelabs.dev-blue.svg)](https://streamlinelabs.dev/docs/sdks/rust)
+[![crates.io](https://img.shields.io/crates/v/streamline-sdk.svg)](https://crates.io/crates/streamline-sdk)
 
 Native Rust client library for Streamline streaming platform.
 
@@ -472,6 +473,58 @@ Run any example:
 ```bash
 cargo run --example producer
 cargo run --example circuit_breaker
+```
+
+## Moonshot Features
+
+> ⚠️ **Experimental** — These features require Streamline server 0.3.0+ with moonshot feature flags enabled.
+> Enable with: `streamline-client = { version = "0.1", features = ["moonshot"] }`
+
+### Semantic Search
+
+Query topics by meaning instead of offset. Requires a topic created with `semantic.embed=true`.
+
+```rust
+let results = client.search("logs.app", "payment failure", 10).await?;
+for hit in &results {
+    println!("[p{}] offset={} score={:.2}", hit.partition, hit.offset, hit.score);
+}
+```
+
+### Attestation Verification
+
+Verify cryptographic provenance attestations attached to records by data contracts.
+
+```rust
+use streamline_client::StreamlineVerifier;
+
+let verifier = StreamlineVerifier::new(&public_key_bytes)?;
+let result = verifier.verify(&record)?;
+println!("Verified: {}, Producer: {}", result.verified, result.producer_id);
+```
+
+### Agent Memory (MCP)
+
+Use Streamline as persistent memory for AI agents via the MCP protocol.
+
+```rust
+use streamline_client::MemoryClient;
+
+let memory = MemoryClient::new("http://localhost:9094/mcp/v1");
+memory.remember("user prefers dark mode", &["preferences"]).await?;
+let results = memory.recall("user preferences", 5).await?;
+```
+
+### Branched Streams
+
+Create topic branches for replay, A/B testing, or counterfactual analysis.
+
+```rust
+let branch = admin.create_branch("events", "experiment-v2").await?;
+let consumer = client.consumer::<String, String>(&branch.topic)
+    .group_id("branch-group")
+    .build()
+    .await?;
 ```
 
 ## Contributing
