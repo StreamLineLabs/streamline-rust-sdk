@@ -1,7 +1,7 @@
 [package]
 # Release workflow configured for automated publishing
 name = "streamline-client"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 authors = ["Streamline Team"]
 description = "Native Rust client for Streamline streaming platform"
