@@ -108,6 +108,7 @@ impl Streamline {
 #[derive(Default)]
 pub struct StreamlineBuilder {
     bootstrap_servers: Option<String>,
+    http_endpoint: Option<String>,
     connection_pool_size: Option<usize>,
     connect_timeout: Option<Duration>,
     request_timeout: Option<Duration>,
@@ -118,6 +119,14 @@ impl StreamlineBuilder {
     /// Sets the bootstrap servers.
     pub fn bootstrap_servers(mut self, servers: &str) -> Self {
         self.bootstrap_servers = Some(servers.to_string());
+        self
+    }
+
+    /// Sets the HTTP endpoint URL for REST API operations.
+    ///
+    /// If not set, the HTTP endpoint is derived from `bootstrap_servers` on port 9094.
+    pub fn http_endpoint(mut self, url: &str) -> Self {
+        self.http_endpoint = Some(url.to_string());
         self
     }
 
@@ -159,6 +168,7 @@ impl StreamlineBuilder {
 
         let config = StreamlineConfig {
             bootstrap_servers: bootstrap_servers.clone(),
+            http_endpoint: self.http_endpoint,
             connection_pool_size: self.connection_pool_size.unwrap_or(4),
             connect_timeout: self.connect_timeout.unwrap_or(Duration::from_secs(30)),
             request_timeout: self.request_timeout.unwrap_or(Duration::from_secs(30)),

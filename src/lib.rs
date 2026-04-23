@@ -28,6 +28,7 @@ mod connection;
 mod consumer;
 mod error;
 mod producer;
+mod validation;
 pub mod admin;
 pub mod circuit_breaker;
 pub mod metrics;
@@ -49,6 +50,7 @@ pub use error::{Error, ErrorKind, Result};
 pub use producer::{Producer, ProducerRecord, RecordMetadata};
 pub use metrics::{ClientMetrics, MetricsSnapshot};
 pub use admin::{Admin, TopicConfig, TopicInfo, PartitionInfo, BrokerInfo, ConsumerGroupInfo, HttpAdmin, ClusterInfo, ClusterBrokerInfo, ConsumerGroupLag, ConsumerLag, InspectedMessage, MetricPoint, BranchInfo};
+pub use validation::validate_topic_name;
 
 /// Message headers.
 pub mod headers {

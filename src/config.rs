@@ -7,6 +7,8 @@ use std::time::Duration;
 pub struct StreamlineConfig {
     /// Bootstrap servers
     pub bootstrap_servers: String,
+    /// HTTP endpoint for REST API operations (default: derived from bootstrap_servers on port 9094)
+    pub http_endpoint: Option<String>,
     /// Connection pool size
     pub connection_pool_size: usize,
     /// Connection timeout
@@ -26,6 +28,7 @@ impl Default for StreamlineConfig {
         Self {
             bootstrap_servers: std::env::var("STREAMLINE_BOOTSTRAP_SERVERS")
                 .unwrap_or_else(|_| "localhost:9092".to_string()),
+            http_endpoint: std::env::var("STREAMLINE_HTTP").ok(),
             connection_pool_size: 4,
             connect_timeout: Duration::from_secs(30),
             request_timeout: Duration::from_secs(30),
@@ -33,6 +36,25 @@ impl Default for StreamlineConfig {
             tls: None,
             sasl: None,
         }
+    }
+}
+
+impl StreamlineConfig {
+    /// Returns the HTTP endpoint URL, falling back to deriving it from
+    /// `bootstrap_servers` on port 9094.
+    pub fn http_base_url(&self) -> String {
+        if let Some(ref url) = self.http_endpoint {
+            return url.trim_end_matches('/').to_string();
+        }
+        let host = self
+            .bootstrap_servers
+            .split(',')
+            .next()
+            .unwrap_or("localhost")
+            .split(':')
+            .next()
+            .unwrap_or("localhost");
+        format!("http://{}:9094", host)
     }
 }
 
@@ -163,6 +185,7 @@ mod tests {
     fn test_streamline_config_default() {
         let config = StreamlineConfig::default();
         assert_eq!(config.bootstrap_servers, "localhost:9092");
+        assert!(config.http_endpoint.is_none());
         assert_eq!(config.connection_pool_size, 4);
         assert_eq!(config.connect_timeout, Duration::from_secs(30));
         assert_eq!(config.request_timeout, Duration::from_secs(30));
@@ -229,5 +252,43 @@ mod tests {
         let sasl = config.sasl.unwrap();
         assert_eq!(sasl.mechanism, SaslMechanism::ScramSha256);
         assert_eq!(sasl.username, "admin");
+    }
+
+    #[test]
+    fn test_http_base_url_from_config() {
+        let config = StreamlineConfig {
+            http_endpoint: Some("http://custom:8080".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(config.http_base_url(), "http://custom:8080");
+    }
+
+    #[test]
+    fn test_http_base_url_strips_trailing_slash() {
+        let config = StreamlineConfig {
+            http_endpoint: Some("http://custom:8080/".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(config.http_base_url(), "http://custom:8080");
+    }
+
+    #[test]
+    fn test_http_base_url_derived_from_bootstrap() {
+        let config = StreamlineConfig {
+            bootstrap_servers: "broker1:9092".to_string(),
+            http_endpoint: None,
+            ..Default::default()
+        };
+        assert_eq!(config.http_base_url(), "http://broker1:9094");
+    }
+
+    #[test]
+    fn test_http_base_url_derived_from_first_bootstrap() {
+        let config = StreamlineConfig {
+            bootstrap_servers: "host1:9092,host2:9092".to_string(),
+            http_endpoint: None,
+            ..Default::default()
+        };
+        assert_eq!(config.http_base_url(), "http://host1:9094");
     }
 }

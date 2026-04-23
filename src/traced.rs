@@ -90,8 +90,13 @@ impl<K: AsRef<[u8]> + Send, V: AsRef<[u8]> + Send> TracedProducer<K, V> {
     }
 
     /// Flushes any buffered messages.
-    pub async fn flush(&self) -> Result<()> {
+    pub async fn flush(&mut self) -> Result<()> {
         self.inner.flush().await
+    }
+
+    /// Gracefully shuts down the producer.
+    pub async fn close(&mut self) -> Result<()> {
+        self.inner.close().await
     }
 
     /// Returns the producer configuration.

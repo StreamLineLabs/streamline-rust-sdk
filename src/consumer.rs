@@ -128,6 +128,7 @@ impl<K, V> Consumer<K, V> {
     /// them via topic metadata, falling back to partition 0.
     pub async fn subscribe(&mut self) -> Result<()> {
         if !self.subscribed {
+            crate::validation::validate_topic_name(&self.topic)?;
             info!("Subscribing to topic {}", self.topic);
 
             // If no partitions were configured, discover them via metadata
@@ -482,16 +483,7 @@ impl<K, V> Consumer<K, V> {
     /// non-200 status.
     #[cfg(any(feature = "schema-registry", feature = "moonshot"))]
     pub async fn search(&self, topic: &str, query: &str, k: usize) -> Result<Vec<SearchResult>> {
-        let host = self
-            .client_config
-            .bootstrap_servers
-            .split(',')
-            .next()
-            .unwrap_or("localhost")
-            .split(':')
-            .next()
-            .unwrap_or("localhost");
-        let base_url = format!("http://{}:9094", host);
+        let base_url = self.client_config.http_base_url();
 
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))

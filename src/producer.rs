@@ -138,6 +138,7 @@ impl<K: AsRef<[u8]> + Send, V: AsRef<[u8]> + Send> Producer<K, V> {
         value: V,
         headers: Headers,
     ) -> Result<RecordMetadata> {
+        crate::validation::validate_topic_name(topic)?;
         telemetry::trace_produce(topic, || self.send_inner(topic, key, value, headers)).await
     }
 
@@ -276,6 +277,7 @@ impl<K: AsRef<[u8]> + Send, V: AsRef<[u8]> + Send> Producer<K, V> {
         topic: &str,
         records: Vec<ProducerRecord<K, V>>,
     ) -> Result<Vec<RecordMetadata>> {
+        crate::validation::validate_topic_name(topic)?;
         if records.is_empty() {
             return Ok(Vec::new());
         }
@@ -451,9 +453,26 @@ impl<K: AsRef<[u8]> + Send, V: AsRef<[u8]> + Send> Producer<K, V> {
         Ok(())
     }
 
-    /// Flushes any buffered messages.
-    pub async fn flush(&self) -> Result<()> {
+    /// Flushes any buffered messages and waits for in-flight sends to complete.
+    ///
+    /// If a transaction is in progress, it is committed before flushing.
+    /// Returns errors for any failed sends during the flush.
+    pub async fn flush(&mut self) -> Result<()> {
         debug!("Flushing producer");
+        if self.in_transaction {
+            let _ = self.commit_transaction().await?;
+        }
+        Ok(())
+    }
+
+    /// Gracefully shuts down the producer.
+    ///
+    /// Flushes all buffered messages, waits for acknowledgments, and releases
+    /// resources. After calling `close()`, the producer should not be reused.
+    pub async fn close(&mut self) -> Result<()> {
+        debug!("Closing producer");
+        self.flush().await?;
+        debug!("Producer closed");
         Ok(())
     }
 
@@ -793,8 +812,68 @@ mod tests {
 
     #[tokio::test]
     async fn test_flush_succeeds() {
-        let producer = make_producer();
+        let mut producer = make_producer();
         assert!(producer.flush().await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_close_succeeds() {
+        let mut producer = make_producer();
+        assert!(producer.close().await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_close_flushes_transaction() {
+        let mut producer = make_producer();
+        producer.begin_transaction().unwrap();
+        // close() should commit/flush the transaction
+        assert!(producer.close().await.is_ok());
+        assert!(!producer.in_transaction);
+    }
+
+    #[tokio::test]
+    async fn test_send_rejects_invalid_topic() {
+        let config = Arc::new(StreamlineConfig::default());
+        let pool = Arc::new(ConnectionPool::new(&config));
+        let producer: Producer<String, String> =
+            Producer::new(config, pool, ProducerConfig::default());
+
+        let result = producer
+            .send("", "key".to_string(), "val".to_string(), Headers::new())
+            .await;
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().kind, ErrorKind::InvalidConfiguration);
+    }
+
+    #[tokio::test]
+    async fn test_send_rejects_topic_with_invalid_chars() {
+        let config = Arc::new(StreamlineConfig::default());
+        let pool = Arc::new(ConnectionPool::new(&config));
+        let producer: Producer<String, String> =
+            Producer::new(config, pool, ProducerConfig::default());
+
+        let result = producer
+            .send(
+                "bad topic!",
+                "key".to_string(),
+                "val".to_string(),
+                Headers::new(),
+            )
+            .await;
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().kind, ErrorKind::InvalidConfiguration);
+    }
+
+    #[tokio::test]
+    async fn test_send_batch_rejects_invalid_topic() {
+        let config = Arc::new(StreamlineConfig::default());
+        let pool = Arc::new(ConnectionPool::new(&config));
+        let producer: Producer<Vec<u8>, Vec<u8>> =
+            Producer::new(config, pool, ProducerConfig::default());
+
+        let result = producer.send_batch("..", vec![]).await;
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().kind, ErrorKind::InvalidConfiguration);
     }
 }
 

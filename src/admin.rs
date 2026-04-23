@@ -151,12 +151,7 @@ impl Admin {
 
     /// Creates a new topic.
     pub async fn create_topic(&self, config: TopicConfig) -> Result<()> {
-        if config.name.is_empty() {
-            return Err(Error::new(
-                ErrorKind::InvalidConfiguration,
-                "Topic name cannot be empty",
-            ));
-        }
+        crate::validation::validate_topic_name(&config.name)?;
         if config.num_partitions < 1 {
             return Err(Error::new(
                 ErrorKind::InvalidConfiguration,
@@ -168,12 +163,7 @@ impl Admin {
 
     /// Deletes a topic.
     pub async fn delete_topic(&self, name: &str) -> Result<()> {
-        if name.is_empty() {
-            return Err(Error::new(
-                ErrorKind::InvalidConfiguration,
-                "Topic name cannot be empty",
-            ));
-        }
+        crate::validation::validate_topic_name(name)?;
         self.pool.delete_topic(name).await
     }
 
