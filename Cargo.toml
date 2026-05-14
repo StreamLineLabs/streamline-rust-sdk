@@ -30,7 +30,7 @@ attestation = ["dep:ed25519-dalek", "dep:base64"]
 tokio = { version = "1.35", features = ["net", "io-util", "sync", "time", "macros"] }
 
 # Kafka protocol
-kafka-protocol = "0.10"
+kafka-protocol = "0.17"
 bytes = "1.5"
 
 # Serialization
