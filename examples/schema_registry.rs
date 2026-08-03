@@ -11,7 +11,7 @@
 
 use serde::{Deserialize, Serialize};
 use streamline_client::schema::{SchemaRegistryClient, SchemaType};
-use streamline_client::{Headers, ProducerRecord, Streamline};
+use streamline_client::{ProducerRecord, Streamline};
 
 /// User record matching the registered Avro schema.
 #[derive(Debug, Serialize, Deserialize)]

@@ -92,6 +92,11 @@ path = "examples/producer.rs"
 name = "consumer"
 path = "examples/consumer.rs"
 
+[[example]]
+name = "agent_memory"
+path = "examples/agent_memory.rs"
+required-features = ["moonshot"]
+
 [lints.clippy]
 unwrap_used = "warn"
 expect_used = "warn"
