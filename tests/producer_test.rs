@@ -50,9 +50,7 @@ fn test_producer_record_topic() {
 
 #[test]
 fn test_producer_record_builder_pattern() {
-    let headers = Headers::builder()
-        .add("h1", b"v1")
-        .build();
+    let headers = Headers::builder().add("h1", b"v1").build();
     let record = ProducerRecord::new("key", "value")
         .with_headers(headers)
         .with_partition(2);

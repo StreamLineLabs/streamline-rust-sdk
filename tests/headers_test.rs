@@ -40,9 +40,7 @@ fn test_headers_get_missing() {
 
 #[test]
 fn test_headers_contains_key() {
-    let headers = Headers::builder()
-        .add("present", b"yes")
-        .build();
+    let headers = Headers::builder().add("present", b"yes").build();
     assert!(headers.get("present").is_some());
     assert!(headers.get("absent").is_none());
 }
@@ -68,10 +66,7 @@ fn test_headers_is_empty() {
 
 #[test]
 fn test_headers_iter() {
-    let headers = Headers::builder()
-        .add("x", b"10")
-        .add("y", b"20")
-        .build();
+    let headers = Headers::builder().add("x", b"10").add("y", b"20").build();
 
     let mut keys: Vec<&String> = headers.iter().map(|(k, _)| k).collect();
     keys.sort();
@@ -83,11 +78,7 @@ fn test_headers_iter() {
 
 #[test]
 fn test_headers_from_vec() {
-    let pairs: Vec<(&str, &[u8])> = vec![
-        ("h1", b"val1"),
-        ("h2", b"val2"),
-        ("h3", b"val3"),
-    ];
+    let pairs: Vec<(&str, &[u8])> = vec![("h1", b"val1"), ("h2", b"val2"), ("h3", b"val3")];
 
     let mut headers = Headers::new();
     for (k, v) in pairs {
@@ -102,18 +93,14 @@ fn test_headers_from_vec() {
 #[test]
 fn test_headers_display() {
     // Headers derives Debug; verify debug formatting works
-    let headers = Headers::builder()
-        .add("key", b"value")
-        .build();
+    let headers = Headers::builder().add("key", b"value").build();
     let debug_str = format!("{:?}", headers);
     assert!(debug_str.contains("key"));
 }
 
 #[test]
 fn test_headers_clone() {
-    let original = Headers::builder()
-        .add("cloned", b"data")
-        .build();
+    let original = Headers::builder().add("cloned", b"data").build();
     let cloned = original.clone();
     assert_eq!(cloned.get_str("cloned"), Some("data"));
 }
@@ -156,9 +143,7 @@ fn test_headers_builder_chaining() {
 
 #[test]
 fn test_headers_empty_key_and_value() {
-    let headers = Headers::builder()
-        .add("", b"")
-        .build();
+    let headers = Headers::builder().add("", b"").build();
     assert!(!headers.is_empty());
     assert_eq!(headers.get(""), Some(b"".as_ref()));
 }

@@ -85,7 +85,9 @@ pub mod headers {
 
         /// Gets a header value as a string.
         pub fn get_str(&self, key: &str) -> Option<&str> {
-            self.inner.get(key).and_then(|v| std::str::from_utf8(v).ok())
+            self.inner
+                .get(key)
+                .and_then(|v| std::str::from_utf8(v).ok())
         }
 
         /// Returns an iterator over headers.
@@ -160,22 +162,15 @@ mod tests {
 
     #[test]
     fn test_headers_builder() {
-        let headers = Headers::builder()
-            .add("k1", b"v1")
-            .add("k2", b"v2")
-            .build();
+        let headers = Headers::builder().add("k1", b"v1").add("k2", b"v2").build();
         assert_eq!(headers.get_str("k1"), Some("v1"));
         assert_eq!(headers.get_str("k2"), Some("v2"));
     }
 
     #[test]
     fn test_headers_iter() {
-        let headers = Headers::builder()
-            .add("a", b"1")
-            .add("b", b"2")
-            .build();
+        let headers = Headers::builder().add("a", b"1").add("b", b"2").build();
         let count = headers.iter().count();
         assert_eq!(count, 2);
     }
 }
-
