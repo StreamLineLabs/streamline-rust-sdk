@@ -1,38 +1,52 @@
 # Streamline Testcontainers (Rust)
 
-Testcontainers module for [Streamline](https://github.com/streamlinelabs/streamline) -- The Redis of Streaming.
+Testcontainers module for [Streamline](https://github.com/streamlinelabs/streamline).
+
+> **Source-only crate.** `streamline-testcontainers` is **not published to crates.io** and has no
+> release workflow. `publish = false` is set in `Cargo.toml`. Depend on it by path or git revision
+> from this repository.
 
 ## Features
 
 - Kafka-compatible container for integration testing
-- Fast startup (~100ms vs seconds for Kafka)
-- Low memory footprint (<50MB)
-- No ZooKeeper or KRaft required
-- Built-in health checks and metrics via HTTP API
 - Builder pattern for configuration
 - Async-first API with Tokio
+- Health, metrics, and info endpoint helpers over the container's HTTP port
 
-## Installation
+## Requirements
 
-Add to your `Cargo.toml`:
+- Rust 1.88 or later (this crate follows the current `testcontainers` dependency line)
+- A running Docker daemon for anything that actually starts a container
+- **An explicit image reference.** There is no default image, no default tag, and no `Default`
+  implementation. This crate does not know which Streamline image exists in your registry, so it
+  refuses to guess.
+
+## Adding the dependency
+
+By path, from a checkout of this repository:
 
 ```toml
 [dev-dependencies]
-streamline-testcontainers = "0.2"
-testcontainers = "0.23"
+streamline-testcontainers = { path = "../streamline-rust-sdk/testcontainers" }
+testcontainers = "=0.28.0"
 tokio = { version = "1", features = ["full"] }
 ```
 
-To also pull in the Streamline client SDK:
+Or by git revision:
 
 ```toml
 [dev-dependencies]
-streamline-testcontainers = { version = "0.2", features = ["client"] }
+streamline-testcontainers = { git = "https://github.com/streamlinelabs/streamline-rust-sdk", rev = "<commit-sha>" }
 ```
+
+To also pull in the Streamline client SDK, enable the `client` feature.
 
 ## Usage
 
 ### Basic test setup
+
+The image reference must be supplied explicitly, and an immutable digest is strongly preferred
+because a tag can be repointed at different content:
 
 ```rust
 use streamline_testcontainers::{StreamlineImage, bootstrap_servers};
@@ -40,21 +54,37 @@ use testcontainers::runners::AsyncRunner;
 
 #[tokio::test]
 async fn test_with_streamline() {
-    // Start a Streamline container -- it is automatically removed when dropped.
-    let container = StreamlineImage::default()
+    let image = StreamlineImage::builder()
+        .image("ghcr.io/streamlinelabs/streamline@sha256:<64 hex digits>")
+        .build()
+        .expect("explicit, immutable image reference");
+
+    // The container is removed automatically when dropped.
+    let container = image
         .start()
         .await
         .expect("failed to start Streamline container");
 
-    // Obtain the Kafka-compatible bootstrap servers address.
     let bs = bootstrap_servers(&container)
         .await
         .expect("failed to get bootstrap servers");
 
     println!("Kafka available at: {bs}");
-
-    // Use `bs` with any Kafka client crate (e.g. rdkafka, kafka-protocol, etc.)
 }
+```
+
+In CI, read the reference from the environment instead of hard-coding it. `StreamlineImage::from_env`
+reads `STREAMLINE_TEST_IMAGE` and returns an error when it is unset — it never falls back to a
+default image:
+
+```rust
+use streamline_testcontainers::StreamlineImage;
+
+# fn example() -> Result<(), Box<dyn std::error::Error>> {
+let image = StreamlineImage::from_env()?;
+assert!(image.is_pinned_by_digest(), "pin STREAMLINE_TEST_IMAGE to a digest");
+# Ok(())
+# }
 ```
 
 ### Getting connection URLs
@@ -67,7 +97,8 @@ use testcontainers::runners::AsyncRunner;
 
 #[tokio::test]
 async fn test_connection_urls() {
-    let container = StreamlineImage::default()
+    let container = StreamlineImage::from_env()
+        .unwrap()
         .start()
         .await
         .unwrap();
@@ -100,12 +131,14 @@ use testcontainers::runners::AsyncRunner;
 #[tokio::test]
 async fn test_with_custom_config() {
     let image = StreamlineImage::builder()
-        .tag("0.2.0")            // pin a specific image version
+        .image("ghcr.io/streamlinelabs/streamline")  // repository (required)
+        .tag("0.4.0")            // mutable tag: prefer .digest(...) when possible
         .log_level("debug")      // set server log level
         .playground(true)        // enable pre-loaded demo topics
         .in_memory(true)         // disable disk persistence
         .env("MY_VAR", "value")  // arbitrary environment variable
-        .build();
+        .build()
+        .expect("explicit image reference");
 
     let container = image.start().await.unwrap();
 
@@ -113,16 +146,27 @@ async fn test_with_custom_config() {
 }
 ```
 
+`build()` returns `Err(Error::InvalidConfiguration)` when no repository is set, when neither a tag
+nor a digest is set, or when a digest is not 64 hexadecimal characters.
+
 ### Debug and trace logging shortcuts
 
 ```rust
 use streamline_testcontainers::StreamlineImage;
 
 // Debug logging
-let image = StreamlineImage::builder().debug_logging().build();
+let image = StreamlineImage::builder()
+    .image("ghcr.io/streamlinelabs/streamline")
+    .tag("0.4.0")
+    .debug_logging()
+    .build()?;
 
 // Trace logging
-let image = StreamlineImage::builder().trace_logging().build();
+let image = StreamlineImage::builder()
+    .image("ghcr.io/streamlinelabs/streamline")
+    .tag("0.4.0")
+    .trace_logging()
+    .build()?;
 ```
 
 ### Cleanup
@@ -135,7 +179,7 @@ use testcontainers::runners::AsyncRunner;
 
 #[tokio::test]
 async fn test_explicit_cleanup() {
-    let container = StreamlineImage::default().start().await.unwrap();
+    let container = StreamlineImage::from_env().unwrap().start().await.unwrap();
 
     // ... run your test ...
 
@@ -154,7 +198,7 @@ use testcontainers::runners::AsyncRunner;
 
 #[tokio::test]
 async fn test_raw_ports() {
-    let container = StreamlineImage::default().start().await.unwrap();
+    let container = StreamlineImage::from_env().unwrap().start().await.unwrap();
 
     let host = container.get_host().await.unwrap();
     let kafka_port = container
@@ -178,21 +222,28 @@ async fn test_raw_ports() {
 |---|---|
 | `KAFKA_PORT` | Kafka protocol port (`9092`) |
 | `HTTP_PORT` | HTTP API port (`9094`) |
-| `StreamlineImage::default()` | Image with default settings |
+| `IMAGE_ENV_VAR` | Name of the image environment variable (`STREAMLINE_TEST_IMAGE`) |
 | `StreamlineImage::builder()` | Returns a `StreamlineImageBuilder` |
+| `StreamlineImage::from_env()` | Builds from `STREAMLINE_TEST_IMAGE`; errors when unset |
+| `.reference()` | Full image reference (`repo@sha256:...` or `repo:tag`) |
+| `.is_pinned_by_digest()` | Whether the reference is an immutable digest |
+
+There is no `StreamlineImage::default()`: the image reference is always explicit.
 
 ### `StreamlineImageBuilder`
 
 | Method | Description |
 |---|---|
-| `.tag(tag)` | Set the Docker image tag |
+| `.image(reference)` | Set repository, `repo:tag`, or `repo@sha256:<digest>` (required) |
+| `.tag(tag)` | Set a mutable Docker image tag |
+| `.digest(digest)` | Pin an immutable digest (with or without the `sha256:` prefix) |
 | `.log_level(level)` | Set log level (trace/debug/info/warn/error) |
 | `.debug_logging()` | Shorthand for `.log_level("debug")` |
 | `.trace_logging()` | Shorthand for `.log_level("trace")` |
 | `.playground(bool)` | Enable/disable playground mode |
 | `.in_memory(bool)` | Enable/disable in-memory storage |
 | `.env(key, value)` | Add an arbitrary environment variable |
-| `.build()` | Consume builder, return `StreamlineImage` |
+| `.build()` | Consume builder, return `Result<StreamlineImage>` |
 
 ### Free functions
 
@@ -200,7 +251,7 @@ async fn test_raw_ports() {
 |---|---|
 | `bootstrap_servers(&container)` | Returns `"host:port"` for Kafka clients |
 | `http_url(&container)` | Returns `"http://host:port"` base URL |
-| `health_url(&container)` | Returns health check endpoint URL |
+| `health_url(&container)` | Returns the live health endpoint (`/health/live`) |
 | `metrics_url(&container)` | Returns Prometheus metrics endpoint URL |
 | `info_url(&container)` | Returns server info endpoint URL |
 
@@ -209,14 +260,18 @@ async fn test_raw_ports() {
 Unit tests (no Docker required):
 
 ```bash
-cargo test --package streamline-testcontainers
+cargo test --manifest-path testcontainers/Cargo.toml
 ```
 
-Integration tests (requires Docker):
+Integration test (requires Docker and an explicit, ideally digest-pinned image):
 
 ```bash
-cargo test --package streamline-testcontainers -- --ignored
+STREAMLINE_TEST_IMAGE=ghcr.io/streamlinelabs/streamline@sha256:<64 hex digits> \
+  cargo test --manifest-path testcontainers/Cargo.toml \
+  tests::container_starts_and_exposes_ports -- --ignored --exact
 ```
+
+The test fails if `STREAMLINE_TEST_IMAGE` is unset or is not pinned to a digest.
 
 ## License
 

@@ -22,34 +22,51 @@
 //! }
 //! ```
 
+#![cfg_attr(not(test), warn(clippy::expect_used, clippy::unwrap_used))]
+
+pub mod admin;
+pub mod circuit_breaker;
 mod client;
 mod config;
 mod connection;
 mod consumer;
 mod error;
-mod producer;
-mod validation;
-pub mod admin;
-pub mod circuit_breaker;
+#[cfg(any(
+    feature = "http-admin",
+    feature = "schema-registry",
+    feature = "moonshot"
+))]
+mod http_url;
 pub mod metrics;
+mod producer;
 pub mod telemetry;
 pub mod traced;
+mod validation;
 
 pub use client::Streamline;
-pub use config::{StreamlineConfig, ConsumerConfig, ProducerConfig, TlsConfig, SaslConfig, SaslMechanism, SecurityProtocol};
-pub mod schema;
-pub mod query;
+pub use config::{
+    ConsumerConfig, ProducerConfig, SaslConfig, SaslMechanism, SecurityProtocol, StreamlineConfig,
+    TlsConfig,
+};
 #[cfg(feature = "moonshot")]
 pub mod moonshot;
+pub mod query;
+#[cfg(feature = "schema-registry")]
+pub mod schema;
 #[cfg(feature = "attestation")]
 pub mod verifier;
+pub use admin::{Admin, BrokerInfo, ConsumerGroupInfo, PartitionInfo, TopicConfig, TopicInfo};
+#[cfg(feature = "http-admin")]
+pub use admin::{
+    BranchInfo, ClusterBrokerInfo, ClusterInfo, ConsumerGroupLag, ConsumerLag, HttpAdmin,
+    InspectedMessage, MetricPoint,
+};
 pub use circuit_breaker::{CircuitBreaker, CircuitBreakerConfig, CircuitState};
 pub use connection::ConnectionPool;
 pub use consumer::{Consumer, ConsumerRecord, SearchResult};
 pub use error::{Error, ErrorKind, Result};
-pub use producer::{Producer, ProducerRecord, RecordMetadata};
 pub use metrics::{ClientMetrics, MetricsSnapshot};
-pub use admin::{Admin, TopicConfig, TopicInfo, PartitionInfo, BrokerInfo, ConsumerGroupInfo, HttpAdmin, ClusterInfo, ClusterBrokerInfo, ConsumerGroupLag, ConsumerLag, InspectedMessage, MetricPoint, BranchInfo};
+pub use producer::{Producer, ProducerRecord, RecordMetadata};
 pub use validation::validate_topic_name;
 
 /// Message headers.

@@ -7,7 +7,7 @@
 //!
 //! ```toml
 //! [dependencies]
-//! streamline-client = { version = "0.2", features = ["moonshot"] }
+//! streamline-client = { version = "0.4.0", features = ["moonshot"] }
 //! ```
 
 use std::collections::HashMap;
@@ -33,7 +33,11 @@ pub enum MoonshotError {
 
 impl MoonshotError {
     fn from_status(status: StatusCode, body: String) -> Self {
-        let trimmed = if body.len() > 512 { body[..512].to_string() } else { body };
+        let trimmed = if body.len() > 512 {
+            body[..512].to_string()
+        } else {
+            body
+        };
         Self::Http {
             status: status.as_u16(),
             body: trimmed,
@@ -75,14 +79,26 @@ impl HttpBase {
         })
     }
 
+    /// Builds a request URL from percent-encoded path segments and query
+    /// parameters, rejecting empty and dot path segments.
+    fn url(
+        &self,
+        segments: &[&str],
+        query: &[(&str, String)],
+    ) -> Result<reqwest::Url, MoonshotError> {
+        crate::http_url::build_url(&self.base, segments, query)
+            .map_err(|error| MoonshotError::InvalidArg(error.message))
+    }
+
     async fn request<T: for<'de> Deserialize<'de>>(
         &self,
         method: Method,
-        path: &str,
+        segments: &[&str],
+        query: &[(&str, String)],
         body: Option<&Value>,
     ) -> Result<Option<T>, MoonshotError> {
-        let url = format!("{}{}", self.base, path);
-        let mut req = self.client.request(method, &url);
+        let url = self.url(segments, query)?;
+        let mut req = self.client.request(method, url);
         if let Some(b) = body {
             req = req.json(b);
         }
@@ -96,15 +112,33 @@ impl HttpBase {
         if bytes.is_empty() {
             return Ok(None);
         }
-        let parsed: T = serde_json::from_slice(&bytes)
-            .map_err(|e| MoonshotError::Decode(e.to_string()))?;
+        let parsed: T =
+            serde_json::from_slice(&bytes).map_err(|e| MoonshotError::Decode(e.to_string()))?;
         Ok(Some(parsed))
     }
 }
 
 fn require_non_empty(name: &str, v: &str) -> Result<(), MoonshotError> {
     if v.trim().is_empty() {
-        return Err(MoonshotError::InvalidArg(format!("{} must not be empty", name)));
+        return Err(MoonshotError::InvalidArg(format!(
+            "{} must not be empty",
+            name
+        )));
+    }
+    Ok(())
+}
+
+/// Validates a value used as a URL path segment.
+///
+/// Rejects empty values and the dot segments `.` and `..`, which are relative
+/// path operators rather than identifiers.
+fn require_path_segment(name: &str, v: &str) -> Result<(), MoonshotError> {
+    require_non_empty(name, v)?;
+    if v == "." || v == ".." {
+        return Err(MoonshotError::InvalidArg(format!(
+            "{} must not be '{}'",
+            name, v
+        )));
     }
     Ok(())
 }
@@ -184,38 +218,42 @@ impl BranchAdminClient {
         }
         let v: BranchView = self
             .http
-            .request(Method::POST, "/api/v1/branches", Some(&body))
+            .request(Method::POST, &["api", "v1", "branches"], &[], Some(&body))
             .await?
             .ok_or_else(|| MoonshotError::Decode("empty response".into()))?;
         Ok(v)
     }
 
     pub async fn list(&self, topic: Option<&str>) -> Result<Vec<BranchView>, MoonshotError> {
-        let path = match topic {
-            Some(t) => format!("/api/v1/branches?topic={}", urlencoding(t)),
-            None => "/api/v1/branches".to_string(),
+        let query = match topic {
+            Some(topic) => {
+                require_non_empty("topic", topic)?;
+                vec![("topic", topic.to_string())]
+            }
+            None => Vec::new(),
         };
         let raw: Value = self
             .http
-            .request(Method::GET, &path, None)
+            .request(Method::GET, &["api", "v1", "branches"], &query, None)
             .await?
             .unwrap_or(Value::Null);
         Ok(parse_branch_list(&raw))
     }
 
     pub async fn get(&self, id: &str) -> Result<BranchView, MoonshotError> {
-        require_non_empty("id", id)?;
-        let path = format!("/api/v1/branches/{}", urlencoding(id));
+        require_path_segment("id", id)?;
         self.http
-            .request(Method::GET, &path, None)
+            .request(Method::GET, &["api", "v1", "branches", id], &[], None)
             .await?
             .ok_or_else(|| MoonshotError::Decode("empty response".into()))
     }
 
     pub async fn delete(&self, id: &str) -> Result<(), MoonshotError> {
-        require_non_empty("id", id)?;
-        let path = format!("/api/v1/branches/{}", urlencoding(id));
-        let _: Option<Value> = self.http.request(Method::DELETE, &path, None).await?;
+        require_path_segment("id", id)?;
+        let _: Option<Value> = self
+            .http
+            .request(Method::DELETE, &["api", "v1", "branches", id], &[], None)
+            .await?;
         Ok(())
     }
 
@@ -225,14 +263,18 @@ impl BranchAdminClient {
         key: Option<&str>,
         value: &str,
     ) -> Result<BranchMessage, MoonshotError> {
-        require_non_empty("id", id)?;
+        require_path_segment("id", id)?;
         let mut body = json!({ "value": value });
         if let Some(k) = key {
             body["key"] = Value::String(k.to_string());
         }
-        let path = format!("/api/v1/branches/{}/messages", urlencoding(id));
         self.http
-            .request(Method::POST, &path, Some(&body))
+            .request(
+                Method::POST,
+                &["api", "v1", "branches", id, "messages"],
+                &[],
+                Some(&body),
+            )
             .await?
             .ok_or_else(|| MoonshotError::Decode("empty response".into()))
     }
@@ -242,14 +284,19 @@ impl BranchAdminClient {
         id: &str,
         limit: Option<u32>,
     ) -> Result<Vec<BranchMessage>, MoonshotError> {
-        require_non_empty("id", id)?;
-        let path = match limit {
-            Some(l) => format!("/api/v1/branches/{}/messages?limit={}", urlencoding(id), l),
-            None => format!("/api/v1/branches/{}/messages", urlencoding(id)),
+        require_path_segment("id", id)?;
+        let query = match limit {
+            Some(limit) => vec![("limit", limit.to_string())],
+            None => Vec::new(),
         };
         let raw: Value = self
             .http
-            .request(Method::GET, &path, None)
+            .request(
+                Method::GET,
+                &["api", "v1", "branches", id, "messages"],
+                &query,
+                None,
+            )
             .await?
             .unwrap_or(Value::Null);
         Ok(parse_branch_messages(&raw))
@@ -333,19 +380,17 @@ impl ContractsClient {
         match value {
             ContractValue::Json(v) => body["value"] = v,
             ContractValue::String(s) => body["value_string"] = Value::String(s),
-            ContractValue::Bytes(b) => body["value_string"] = Value::String(
-                String::from_utf8(b).map_err(|e| MoonshotError::Decode(e.to_string()))?,
-            ),
+            ContractValue::Bytes(b) => {
+                body["value_string"] = Value::String(
+                    String::from_utf8(b).map_err(|e| MoonshotError::Decode(e.to_string()))?,
+                )
+            }
         }
 
-        let url = format!("{}/api/v1/contracts/validate", self.http.base);
-        let resp = self
+        let url = self
             .http
-            .client
-            .post(&url)
-            .json(&body)
-            .send()
-            .await?;
+            .url(&["api", "v1", "contracts", "validate"], &[])?;
+        let resp = self.http.client.post(url).json(&body).send().await?;
         let status = resp.status();
         let bytes = resp.bytes().await?;
         let valid = status.is_success();
@@ -469,7 +514,12 @@ impl Attestor {
             body["value"] = Value::String(s);
         }
         self.http
-            .request(Method::POST, "/api/v1/attest/sign", Some(&body))
+            .request(
+                Method::POST,
+                &["api", "v1", "attest", "sign"],
+                &[],
+                Some(&body),
+            )
             .await?
             .ok_or_else(|| MoonshotError::Decode("empty response".into()))
     }
@@ -502,7 +552,12 @@ impl Attestor {
         }
         let v: Value = self
             .http
-            .request(Method::POST, "/api/v1/attest/verify", Some(&body))
+            .request(
+                Method::POST,
+                &["api", "v1", "attest", "verify"],
+                &[],
+                Some(&body),
+            )
             .await?
             .unwrap_or(Value::Null);
         Ok(v.get("valid").and_then(|v| v.as_bool()).unwrap_or(false))
@@ -547,7 +602,10 @@ pub struct SearchOptions {
 
 impl Default for SearchOptions {
     fn default() -> Self {
-        Self { k: 10, filter: None }
+        Self {
+            k: 10,
+            filter: None,
+        }
     }
 }
 
@@ -569,7 +627,7 @@ impl SemanticSearchClient {
         query: &str,
         opts: SearchOptions,
     ) -> Result<SearchResult, MoonshotError> {
-        require_non_empty("topic", topic)?;
+        require_path_segment("topic", topic)?;
         require_non_empty("query", query)?;
         if opts.k == 0 || opts.k > 1000 {
             return Err(MoonshotError::InvalidArg("k must be in 1..=1000".into()));
@@ -578,9 +636,13 @@ impl SemanticSearchClient {
         if let Some(f) = opts.filter {
             body["filter"] = f;
         }
-        let path = format!("/api/v1/topics/{}/search", urlencoding(topic));
         self.http
-            .request(Method::POST, &path, Some(&body))
+            .request(
+                Method::POST,
+                &["api", "v1", "topics", topic, "search"],
+                &[],
+                Some(&body),
+            )
             .await?
             .ok_or_else(|| MoonshotError::Decode("empty response".into()))
     }
@@ -673,7 +735,9 @@ impl MemoryClient {
         }
         if let Some(s) = p.salience {
             if !(0.0..=1.0).contains(&s) {
-                return Err(MoonshotError::InvalidArg("salience must be in [0,1]".into()));
+                return Err(MoonshotError::InvalidArg(
+                    "salience must be in [0,1]".into(),
+                ));
             }
         }
         let mut body = json!({
@@ -692,7 +756,12 @@ impl MemoryClient {
         }
         let v: Value = self
             .http
-            .request(Method::POST, "/api/v1/memory/remember", Some(&body))
+            .request(
+                Method::POST,
+                &["api", "v1", "memory", "remember"],
+                &[],
+                Some(&body),
+            )
             .await?
             .unwrap_or(Value::Null);
         Ok(v.get("written")
@@ -720,7 +789,12 @@ impl MemoryClient {
         }
         let v: Value = self
             .http
-            .request(Method::POST, "/api/v1/memory/recall", Some(&body))
+            .request(
+                Method::POST,
+                &["api", "v1", "memory", "recall"],
+                &[],
+                Some(&body),
+            )
             .await?
             .unwrap_or(Value::Null);
         Ok(v.get("hits")
@@ -732,19 +806,6 @@ impl MemoryClient {
             })
             .unwrap_or_default())
     }
-}
-
-fn urlencoding(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for b in s.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char);
-            }
-            _ => out.push_str(&format!("%{:02X}", b)),
-        }
-    }
-    out
 }
 
 #[cfg(test)]
@@ -760,6 +821,73 @@ mod tests {
 
     fn opts(server: &MockServer) -> MoonshotOptions {
         MoonshotOptions::new(server.uri())
+    }
+
+    #[test]
+    fn require_path_segment_rejects_dot_segments() {
+        for value in [".", ".."] {
+            let error = require_path_segment("id", value).unwrap_err();
+            assert!(
+                matches!(&error, MoonshotError::InvalidArg(message) if message.contains(value)),
+                "{error}"
+            );
+        }
+        assert!(require_path_segment("id", "").is_err());
+        assert!(require_path_segment("id", "branch-1").is_ok());
+        // Leading dots are legitimate identifiers.
+        assert!(require_path_segment("id", ".hidden").is_ok());
+    }
+
+    #[test]
+    fn http_base_encodes_reserved_characters() {
+        let base = HttpBase::new(&MoonshotOptions::new("http://localhost:9094")).unwrap();
+        let url = base
+            .url(&["api", "v1", "branches", "a/../b?x=1#f", "messages"], &[])
+            .unwrap();
+        assert_eq!(
+            url.as_str(),
+            "http://localhost:9094/api/v1/branches/a%2F..%2Fb%3Fx=1%23f/messages"
+        );
+        assert!(url.query().is_none());
+        assert_eq!(url.path_segments().unwrap().count(), 5);
+
+        let url = base
+            .url(
+                &["api", "v1", "branches"],
+                &[("topic", "a b&c".to_string())],
+            )
+            .unwrap();
+        assert_eq!(url.query(), Some("topic=a+b%26c"));
+    }
+
+    #[tokio::test]
+    async fn dot_segment_arguments_are_rejected_before_any_request() {
+        // Unroutable base: rejected arguments must fail before network I/O.
+        let options = MoonshotOptions::new("http://192.0.2.1:9094");
+        let branches = BranchAdminClient::new(options.clone()).unwrap();
+        for id in [".", ".."] {
+            assert!(matches!(
+                branches.get(id).await.unwrap_err(),
+                MoonshotError::InvalidArg(_)
+            ));
+            assert!(matches!(
+                branches.delete(id).await.unwrap_err(),
+                MoonshotError::InvalidArg(_)
+            ));
+            assert!(matches!(
+                branches.messages(id, None).await.unwrap_err(),
+                MoonshotError::InvalidArg(_)
+            ));
+        }
+
+        let search = SemanticSearchClient::new(options).unwrap();
+        assert!(matches!(
+            search
+                .search("..", "q", SearchOptions::default())
+                .await
+                .unwrap_err(),
+            MoonshotError::InvalidArg(_)
+        ));
     }
 
     #[tokio::test]
@@ -817,7 +945,10 @@ mod tests {
             .await;
         let c = ContractsClient::new(opts(&s)).unwrap();
         let r = c
-            .validate(json!({"name": "c"}), ContractValue::Json(json!({"id": "x"})))
+            .validate(
+                json!({"name": "c"}),
+                ContractValue::Json(json!({"id": "x"})),
+            )
             .await
             .unwrap();
         assert!(r.valid);
@@ -936,7 +1067,11 @@ mod tests {
             .await;
         let c = SemanticSearchClient::new(opts(&s)).unwrap();
         let r = c
-            .search("logs", "payment failure", SearchOptions { k: 5, filter: None })
+            .search(
+                "logs",
+                "payment failure",
+                SearchOptions { k: 5, filter: None },
+            )
             .await
             .unwrap();
         assert_eq!(r.took_ms, 12);
@@ -953,7 +1088,10 @@ mod tests {
             .search(
                 "t",
                 "q",
-                SearchOptions { k: 1001, filter: None }
+                SearchOptions {
+                    k: 1001,
+                    filter: None
+                }
             )
             .await
             .is_err());

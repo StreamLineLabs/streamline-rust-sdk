@@ -1,5 +1,6 @@
 //! StreamQL query client for executing SQL queries.
 
+use crate::error::{Error, Result};
 use serde::{Deserialize, Serialize};
 
 /// Query result from the Streamline API.
@@ -57,6 +58,16 @@ impl QueryRequest {
 
 /// Query client that communicates with the Streamline HTTP API.
 pub struct QueryClient {
+    // Only read when an HTTP feature is enabled; without one the SDK has no
+    // HTTP stack and URL construction reports `Unsupported`.
+    #[cfg_attr(
+        not(any(
+            feature = "http-admin",
+            feature = "schema-registry",
+            feature = "moonshot"
+        )),
+        allow(dead_code)
+    )]
     base_url: String,
 }
 
@@ -68,13 +79,54 @@ impl QueryClient {
     }
 
     /// Get the query URL.
-    pub fn query_url(&self) -> String {
-        format!("{}/api/v1/query", self.base_url)
+    ///
+    /// # Errors
+    /// Returns [`crate::ErrorKind::InvalidConfiguration`] when the configured
+    /// base URL is not an absolute `http`/`https` URL. Requires an HTTP
+    /// feature (`http-admin`, `schema-registry`, or `moonshot`); without one
+    /// the SDK has no HTTP stack and the call reports
+    /// [`crate::ErrorKind::Unsupported`].
+    pub fn query_url(&self) -> Result<String> {
+        self.url(&["api", "v1", "query"])
     }
 
     /// Get the explain URL.
-    pub fn explain_url(&self) -> String {
-        format!("{}/api/v1/query/explain", self.base_url)
+    ///
+    /// # Errors
+    /// Same as [`QueryClient::query_url`].
+    pub fn explain_url(&self) -> Result<String> {
+        self.url(&["api", "v1", "query", "explain"])
+    }
+
+    #[cfg(any(
+        feature = "http-admin",
+        feature = "schema-registry",
+        feature = "moonshot"
+    ))]
+    fn url(&self, segments: &[&str]) -> Result<String> {
+        Ok(crate::http_url::build_url(&self.base_url, segments, &[])?.to_string())
+    }
+
+    #[cfg(not(any(
+        feature = "http-admin",
+        feature = "schema-registry",
+        feature = "moonshot"
+    )))]
+    fn url(&self, _segments: &[&str]) -> Result<String> {
+        Err(
+            Error::unsupported("StreamQL query URL construction").with_hint(
+                "Enable the http-admin, schema-registry, or moonshot feature for HTTP support",
+            ),
+        )
+    }
+
+    /// Returns an explicit unsupported error.
+    ///
+    /// Version 0.4.0 exposes query request and response types for API
+    /// compatibility, but does not execute SQL requests. This method exists so
+    /// callers cannot mistake URL construction for successful query support.
+    pub async fn execute(&self, _request: &QueryRequest) -> Result<QueryResult> {
+        Err(Error::unsupported("StreamQL query execution"))
     }
 }
 
@@ -121,46 +173,97 @@ mod tests {
         assert_eq!(req.max_rows, 50);
     }
 
+    #[cfg(any(
+        feature = "http-admin",
+        feature = "schema-registry",
+        feature = "moonshot"
+    ))]
+    mod urls {
+        use super::*;
+
+        #[test]
+        fn test_query_client_new() {
+            let client = QueryClient::new("http://localhost:9094");
+            assert_eq!(
+                client.query_url().unwrap(),
+                "http://localhost:9094/api/v1/query"
+            );
+        }
+
+        #[test]
+        fn test_query_client_trims_trailing_slash() {
+            let client = QueryClient::new("http://localhost:9094/");
+            assert_eq!(
+                client.query_url().unwrap(),
+                "http://localhost:9094/api/v1/query"
+            );
+        }
+
+        #[test]
+        fn test_query_client_trims_multiple_trailing_slashes() {
+            let client = QueryClient::new("http://localhost:9094///");
+            // trim_end_matches strips all trailing slashes
+            assert_eq!(
+                client.query_url().unwrap(),
+                "http://localhost:9094/api/v1/query"
+            );
+        }
+
+        #[test]
+        fn test_query_url() {
+            let client = QueryClient::new("https://streamline.example.com");
+            assert_eq!(
+                client.query_url().unwrap(),
+                "https://streamline.example.com/api/v1/query"
+            );
+        }
+
+        #[test]
+        fn test_explain_url() {
+            let client = QueryClient::new("http://localhost:9094");
+            assert_eq!(
+                client.explain_url().unwrap(),
+                "http://localhost:9094/api/v1/query/explain"
+            );
+        }
+
+        #[test]
+        fn test_query_url_rejects_invalid_base() {
+            let client = QueryClient::new("not-a-url");
+            assert_eq!(
+                client.query_url().unwrap_err().kind,
+                crate::ErrorKind::InvalidConfiguration
+            );
+        }
+    }
+
+    #[cfg(not(any(
+        feature = "http-admin",
+        feature = "schema-registry",
+        feature = "moonshot"
+    )))]
     #[test]
-    fn test_query_client_new() {
+    fn test_query_url_requires_http_feature() {
         let client = QueryClient::new("http://localhost:9094");
-        assert_eq!(client.query_url(), "http://localhost:9094/api/v1/query");
-    }
-
-    #[test]
-    fn test_query_client_trims_trailing_slash() {
-        let client = QueryClient::new("http://localhost:9094/");
-        assert_eq!(client.query_url(), "http://localhost:9094/api/v1/query");
-    }
-
-    #[test]
-    fn test_query_client_trims_multiple_trailing_slashes() {
-        let client = QueryClient::new("http://localhost:9094///");
-        // trim_end_matches strips all trailing slashes
-        assert_eq!(client.query_url(), "http://localhost:9094/api/v1/query");
-    }
-
-    #[test]
-    fn test_query_url() {
-        let client = QueryClient::new("https://streamline.example.com");
         assert_eq!(
-            client.query_url(),
-            "https://streamline.example.com/api/v1/query"
+            client.query_url().unwrap_err().kind,
+            crate::ErrorKind::Unsupported
         );
     }
 
-    #[test]
-    fn test_explain_url() {
+    #[tokio::test]
+    async fn test_query_execution_fails_closed() {
         let client = QueryClient::new("http://localhost:9094");
-        assert_eq!(
-            client.explain_url(),
-            "http://localhost:9094/api/v1/query/explain"
-        );
+        let request = QueryRequest::new("SELECT 1");
+        let error = client.execute(&request).await.unwrap_err();
+        assert_eq!(error.kind, crate::ErrorKind::Unsupported);
     }
 
     #[test]
     fn test_query_request_serializes_to_json() {
-        let req = QueryRequest::new("SELECT * FROM t").with_timeout(5000).with_max_rows(100);
+        let req = QueryRequest::new("SELECT * FROM t")
+            .with_timeout(5000)
+            .with_max_rows(100);
         let json = serde_json::to_value(&req).expect("serialize");
         assert_eq!(json["sql"], "SELECT * FROM t");
         assert_eq!(json["timeout_ms"], 5000);
@@ -219,4 +322,3 @@ mod tests {
         assert_eq!(col.col_type, "DOUBLE");
     }
 }
-

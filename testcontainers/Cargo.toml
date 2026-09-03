@@ -2,13 +2,21 @@
 name = "streamline-testcontainers"
 version = "0.2.0"
 edition = "2021"
+rust-version = "1.88"
 authors = ["Streamline Team"]
-description = "Testcontainers module for Streamline - The Redis of Streaming"
+description = "Testcontainers module for the Streamline streaming platform (source-only, unpublished)"
 license = "Apache-2.0"
 repository = "https://github.com/streamlinelabs/streamline-rust-sdk"
-documentation = "https://docs.rs/streamline-testcontainers"
+homepage = "https://github.com/streamlinelabs/streamline-rust-sdk"
+readme = "README.md"
 keywords = ["streamline", "kafka", "testcontainers", "testing", "docker"]
 categories = ["development-tools::testing"]
+# This crate is source-only: it is NOT published to crates.io, and no
+# `streamline-testcontainers` release exists there. It depends on
+# `streamline-client` by path, so publishing it would additionally require a
+# dependency-first release order that this repository does not implement.
+# Consume it by path or git revision from this repository instead.
+publish = false
 
 [features]
 default = []
@@ -17,7 +25,7 @@ client = ["dep:streamline-client"]
 
 [dependencies]
 # Testcontainers core
-testcontainers = "0.23"
+testcontainers = { version = "=0.28.0", features = ["http_wait_plain"] }
 
 # Async runtime
 tokio = { version = "1.35", features = ["time"] }
@@ -25,9 +33,16 @@ tokio = { version = "1.35", features = ["time"] }
 # Error handling
 thiserror = "1.0"
 
-# Optional: main SDK crate
+# Optional: main SDK crate, consumed by path (this crate is not published).
 streamline-client = { path = "..", optional = true }
 
 [dev-dependencies]
+reqwest = { version = "0.12.28", default-features = false, features = ["rustls-tls"] }
 tokio = { version = "1.35", features = ["full"] }
-testcontainers = "0.23"
+testcontainers = { version = "=0.28.0", features = ["http_wait_plain"] }
+
+[package.metadata.docs.rs]
+all-features = true
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(test)"] }

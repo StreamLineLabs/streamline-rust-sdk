@@ -416,25 +416,27 @@ impl<K, V> Consumer<K, V> {
     /// non-200 status.
     #[cfg(any(feature = "schema-registry", feature = "moonshot"))]
     pub async fn search(&self, topic: &str, query: &str, k: usize) -> Result<Vec<SearchResult>> {
+        crate::validation::validate_topic_name(topic)?;
         let base_url = self.client_config.http_base_url();
+        let url =
+            crate::http_url::build_url(&base_url, &["api", "v1", "topics", topic, "search"], &[])?;
 
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
             .build()
             .map_err(|e| Error::new(ErrorKind::Connection, format!("HTTP client error: {}", e)))?;
 
-        let url = format!("{}/api/v1/topics/{}/search", base_url, topic);
         let body = serde_json::json!({
             "query": query,
             "k": k,
         });
 
-        let resp = client
-            .post(&url)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| Error::new(ErrorKind::Connection, format!("Search request failed: {}", e)))?;
+        let resp = client.post(url).json(&body).send().await.map_err(|e| {
+            Error::new(
+                ErrorKind::Connection,
+                format!("Search request failed: {}", e),
+            )
+        })?;
 
         if !resp.status().is_success() {
             let status = resp.status();
@@ -445,10 +447,12 @@ impl<K, V> Consumer<K, V> {
             ));
         }
 
-        let data: SearchResponse = resp
-            .json()
-            .await
-            .map_err(|e| Error::new(ErrorKind::Serialization, format!("JSON decode failed: {}", e)))?;
+        let data: SearchResponse = resp.json().await.map_err(|e| {
+            Error::new(
+                ErrorKind::Serialization,
+                format!("JSON decode failed: {}", e),
+            )
+        })?;
 
         Ok(data.hits)
     }
