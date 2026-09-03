@@ -6,28 +6,27 @@ on:
   pull_request:
     branches: [main]
   schedule:
-    - cron: '0 6 * * 1'  # Weekly on Monday
+    - cron: "0 6 * * 1"
 
 permissions:
-  security-events: write
   contents: read
+  security-events: write
 
 jobs:
   analyze:
-    name: Analyze
+    name: Analyze Rust
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: github/codeql-action/init@v3
         with:
-          languages: cpp
-          queries: +security-extended
-          config: |
-            paths:
-              - src
+          languages: rust
+          build-mode: none
+          queries: security-extended
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build
+      - name: Verify all Rust targets compile
+        run: cargo check --all-features --all-targets
       - uses: github/codeql-action/analyze@v3
         with:
-          category: /language:cpp
+          category: /language:rust

@@ -1,33 +1,178 @@
 name: Release
+
 on:
   push:
-    tags: ['v*']
+    tags:
+      - "v*"
+
 permissions:
   contents: write
+  id-token: write
+  attestations: write
+
 jobs:
+  # Publication is gated on live conformance against an explicit, immutable
+  # image digest. A missing or non-digest image reference is a hard block: the
+  # job fails rather than skipping, so a tag can never be published on the
+  # strength of offline tests alone.
+  live-conformance:
+    name: Live conformance (pinned image digest)
+    runs-on: ubuntu-latest
+    env:
+      # Repository variable, e.g.
+      # ghcr.io/streamlinelabs/streamline@sha256:<64 hex digits>
+      STREAMLINE_TEST_IMAGE: ${{ vars.STREAMLINE_TEST_IMAGE }}
+      STREAMLINE_CONFORMANCE_TOPIC: rust-sdk-conformance
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Require an immutable image digest
+        run: |
+          set -euo pipefail
+          if [ -z "${STREAMLINE_TEST_IMAGE:-}" ]; then
+            echo "::error::STREAMLINE_TEST_IMAGE repository variable is not set." \
+                 "Set it to an immutable digest reference such as" \
+                 "ghcr.io/streamlinelabs/streamline@sha256:<64 hex digits>." \
+                 "Releases are blocked until live conformance can run."
+            exit 1
+          fi
+          if ! printf '%s' "$STREAMLINE_TEST_IMAGE" | grep -Eq '^[^[:space:]@:]+(:[0-9]+)?(/[^[:space:]@:]+)+@sha256:[0-9a-f]{64}$'; then
+            echo "::error::STREAMLINE_TEST_IMAGE ('$STREAMLINE_TEST_IMAGE') is not an immutable" \
+                 "digest reference of the form <repository>@sha256:<64 hex digits>." \
+                 "Mutable tags are rejected: they cannot pin what was actually tested."
+            exit 1
+          fi
+          echo "Pinned conformance image: $STREAMLINE_TEST_IMAGE"
+
+      - name: Verify Docker is available
+        run: docker info
+
+      - name: Pull the pinned image
+        run: |
+          set -euo pipefail
+          # A missing image is a hard block, not a skip.
+          if ! docker pull --quiet "$STREAMLINE_TEST_IMAGE"; then
+            echo "::error::Failed to pull $STREAMLINE_TEST_IMAGE. The image must exist and be" \
+                 "readable by this workflow before a tag can be published."
+            exit 1
+          fi
+
+      - name: Start the pinned broker
+        run: |
+          set -euo pipefail
+          docker run -d --name streamline-conformance \
+            -p 9092:9092 -p 9094:9094 \
+            -e STREAMLINE_LISTEN_ADDR=0.0.0.0:9092 \
+            -e STREAMLINE_HTTP_ADDR=0.0.0.0:9094 \
+            -e STREAMLINE_LOG_LEVEL=info \
+            "$STREAMLINE_TEST_IMAGE"
+          for attempt in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:9094/health >/dev/null 2>&1; then
+              echo "Broker healthy after ${attempt}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::Broker from $STREAMLINE_TEST_IMAGE did not become healthy within 60s"
+          docker logs streamline-conformance || true
+          exit 1
+
+      - name: Run live conformance suite with an executed-test-count guard
+        env:
+          STREAMLINE_BOOTSTRAP_SERVERS: 127.0.0.1:9092
+          STREAMLINE_HTTP: http://127.0.0.1:9094
+        run: |
+          set -euo pipefail
+          # Number of live tests declared in the suite.
+          expected="$(grep -c '^#\[ignore\]$' tests/live_conformance.rs)"
+          if [ "$expected" -lt 1 ]; then
+            echo "::error::No live conformance tests are declared in tests/live_conformance.rs"
+            exit 1
+          fi
+
+          cargo test --locked --test live_conformance -- --ignored 2>&1 | tee conformance.log
+
+          summary="$(grep -E '^test result:' conformance.log | tail -n 1)"
+          if [ -z "$summary" ]; then
+            echo "::error::Could not find a test result summary; the live suite did not report results"
+            exit 1
+          fi
+          passed="$(printf '%s' "$summary" | sed -E 's/.* ([0-9]+) passed.*/\1/')"
+          failed="$(printf '%s' "$summary" | sed -E 's/.* ([0-9]+) failed.*/\1/')"
+          echo "Live conformance summary: $summary"
+
+          if [ "$failed" != "0" ]; then
+            echo "::error::Live conformance reported $failed failing test(s)"
+            exit 1
+          fi
+          if [ "$passed" != "$expected" ]; then
+            echo "::error::Live conformance executed $passed test(s) but $expected are declared." \
+                 "A conformance run that silently skips tests must not gate a release."
+            exit 1
+          fi
+
+      - name: Collect broker logs on failure
+        if: failure()
+        run: docker logs streamline-conformance || true
+
+      - name: Stop the broker
+        if: always()
+        run: docker rm -f streamline-conformance || true
+
   release:
+    name: Package and publish
+    needs: live-conformance
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - name: Verify version
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Verify release tag and version
         run: |
-          TAG=${GITHUB_REF#refs/tags/v}
-          CARGO_VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
-          [ "$TAG" = "$CARGO_VERSION" ] || (echo "Tag v$TAG != Cargo.toml $CARGO_VERSION" && exit 1)
+          VERSION="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "streamline-client") | .version')"
+          test "$GITHUB_REF_NAME" = "v$VERSION"
+          grep -F "## [$VERSION]" CHANGELOG.md
+          echo "CRATE_PATH=target/package/streamline-client-$VERSION.crate" >> "$GITHUB_ENV"
+          echo "SBOM_PATH=streamline-client-$VERSION.spdx.json" >> "$GITHUB_ENV"
+
+      - name: Run release tests
+        run: cargo test --locked --all-features --all-targets
+      - name: Package crate
+        run: cargo package --locked
+      - name: Verify publish payload
+        run: cargo publish --locked --dry-run
+
+      - name: Generate package SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          file: ${{ env.CRATE_PATH }}
+          format: spdx-json
+          output-file: ${{ env.SBOM_PATH }}
+          upload-artifact: false
+
+      - name: Attest package provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: ${{ env.CRATE_PATH }}
+
+      - name: Attest package SBOM
+        uses: actions/attest-sbom@v2
+        with:
+          subject-path: ${{ env.CRATE_PATH }}
+          sbom-path: ${{ env.SBOM_PATH }}
+
       - name: Publish to crates.io
-        run: cargo publish
+        run: cargo publish --locked
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-      - name: Generate SBOM
-        run: |
-          cargo install cargo-cyclonedx --quiet 2>/dev/null || true
-          cargo cyclonedx --format json --output-file sbom.cdx.json 2>/dev/null || true
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
           files: |
-            sbom.cdx.json
-
-# Version validation enabled
+            ${{ env.CRATE_PATH }}
+            ${{ env.SBOM_PATH }}

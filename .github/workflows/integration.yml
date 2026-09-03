@@ -1,41 +1,129 @@
-name: Integration Tests
+name: Container Integration
+
+# Starts a Streamline container from an explicit, immutable image digest and
+# runs the testcontainers smoke test plus the live conformance suite against
+# it. A missing or non-digest image reference is a hard failure: this workflow
+# never falls back to a default image or silently skips.
 
 on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
   schedule:
-    - cron: '0 4 * * 1' # Weekly Monday 4am UTC
+    - cron: "0 4 * * 1"
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
-  integration:
+  container-smoke:
+    name: Pinned Streamline container smoke test
     runs-on: ubuntu-latest
-    services:
-      streamline:
-        image: ghcr.io/streamlinelabs/streamline:latest
-        ports:
-          - 9092:9092
-          - 9094:9094
-        options: >-
-          --health-cmd "curl -f http://localhost:9094/health || exit 1"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
+    env:
+      STREAMLINE_TEST_IMAGE: ${{ vars.STREAMLINE_TEST_IMAGE }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.88"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: testcontainers
+
+      - name: Require an immutable image digest
+        run: |
+          set -euo pipefail
+          if [ -z "${STREAMLINE_TEST_IMAGE:-}" ]; then
+            echo "::error::STREAMLINE_TEST_IMAGE repository variable is not set." \
+                 "Set it to ghcr.io/streamlinelabs/streamline@sha256:<64 hex digits>."
+            exit 1
+          fi
+          if ! printf '%s' "$STREAMLINE_TEST_IMAGE" | grep -Eq '^[^[:space:]@:]+(:[0-9]+)?(/[^[:space:]@:]+)+@sha256:[0-9a-f]{64}$'; then
+            echo "::error::STREAMLINE_TEST_IMAGE ('$STREAMLINE_TEST_IMAGE') is not an immutable" \
+                 "digest reference of the form <repository>@sha256:<64 hex digits>."
+            exit 1
+          fi
+
+      - name: Verify Docker is available
+        run: docker info
+
+      - name: Start pinned image and verify exposed endpoints
+        run: |
+          set -euo pipefail
+          # `cargo test` exits 0 when a filter matches nothing, so assert that
+          # exactly one test actually ran: a renamed or moved test must fail
+          # this job rather than pass having started no container.
+          cargo test --manifest-path testcontainers/Cargo.toml --locked \
+            tests::container_starts_and_exposes_ports -- --ignored --exact 2>&1 | tee smoke.log
+
+          summary="$(grep -E '^test result:' smoke.log | tail -n 1)"
+          passed="$(printf '%s' "$summary" | sed -E 's/.* ([0-9]+) passed.*/\1/')"
+          failed="$(printf '%s' "$summary" | sed -E 's/.* ([0-9]+) failed.*/\1/')"
+          if [ "$passed" != "1" ] || [ "$failed" != "0" ]; then
+            echo "::error::Container smoke test executed $passed test(s) with $failed failure(s); expected exactly 1 passing test"
+            exit 1
+          fi
+
+  live-conformance:
+    name: Live SDK conformance against the pinned image
+    runs-on: ubuntu-latest
+    env:
+      STREAMLINE_TEST_IMAGE: ${{ vars.STREAMLINE_TEST_IMAGE }}
+      STREAMLINE_CONFORMANCE_TOPIC: rust-sdk-conformance
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: Wait for Streamline
+
+      - name: Require an immutable image digest
         run: |
-          for i in $(seq 1 30); do
-            curl -sf http://localhost:9094/health && break
-            echo "Waiting for Streamline... ($i/30)"
-            sleep 2
+          set -euo pipefail
+          if [ -z "${STREAMLINE_TEST_IMAGE:-}" ]; then
+            echo "::error::STREAMLINE_TEST_IMAGE repository variable is not set."
+            exit 1
+          fi
+          if ! printf '%s' "$STREAMLINE_TEST_IMAGE" | grep -Eq '^[^[:space:]@:]+(:[0-9]+)?(/[^[:space:]@:]+)+@sha256:[0-9a-f]{64}$'; then
+            echo "::error::STREAMLINE_TEST_IMAGE ('$STREAMLINE_TEST_IMAGE') is not an immutable digest reference."
+            exit 1
+          fi
+
+      - name: Start the pinned broker
+        run: |
+          set -euo pipefail
+          docker run -d --name streamline-conformance \
+            -p 9092:9092 -p 9094:9094 \
+            -e STREAMLINE_LISTEN_ADDR=0.0.0.0:9092 \
+            -e STREAMLINE_HTTP_ADDR=0.0.0.0:9094 \
+            "$STREAMLINE_TEST_IMAGE"
+          for attempt in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:9094/health >/dev/null 2>&1; then
+              echo "Broker healthy after ${attempt}s"
+              exit 0
+            fi
+            sleep 1
           done
-      - name: Run integration tests
-        run: cargo test --tests --features integration -- --include-ignored
+          echo "::error::Broker did not become healthy within 60s"
+          docker logs streamline-conformance || true
+          exit 1
+
+      - name: Run live conformance suite with an executed-test-count guard
         env:
-          STREAMLINE_BOOTSTRAP_SERVERS: localhost:9092
-          STREAMLINE_HTTP_URL: http://localhost:9094
+          STREAMLINE_BOOTSTRAP_SERVERS: 127.0.0.1:9092
+          STREAMLINE_HTTP: http://127.0.0.1:9094
+        run: |
+          set -euo pipefail
+          expected="$(grep -c '^#\[ignore\]$' tests/live_conformance.rs)"
+          if [ "$expected" -lt 1 ]; then
+            echo "::error::No live conformance tests are declared"
+            exit 1
+          fi
+          cargo test --locked --test live_conformance -- --ignored 2>&1 | tee conformance.log
+          summary="$(grep -E '^test result:' conformance.log | tail -n 1)"
+          passed="$(printf '%s' "$summary" | sed -E 's/.* ([0-9]+) passed.*/\1/')"
+          failed="$(printf '%s' "$summary" | sed -E 's/.* ([0-9]+) failed.*/\1/')"
+          if [ "$failed" != "0" ] || [ "$passed" != "$expected" ]; then
+            echo "::error::Live conformance executed $passed/$expected test(s) with $failed failure(s)"
+            exit 1
+          fi
+
+      - name: Stop the broker
+        if: always()
+        run: docker rm -f streamline-conformance || true

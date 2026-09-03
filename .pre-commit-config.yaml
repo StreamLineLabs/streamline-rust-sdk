@@ -26,9 +26,16 @@ repos:
         types: [rust]
         pass_filenames: false
 
-      - id: cargo-clippy
-        name: cargo clippy
-        entry: cargo clippy --all-targets -- -D warnings
+      - id: cargo-clippy-minimal
+        name: cargo clippy (minimal features)
+        entry: cargo clippy --no-default-features --lib --tests -- -D warnings
+        language: system
+        types: [rust]
+        pass_filenames: false
+
+      - id: cargo-clippy-all
+        name: cargo clippy (all features and targets)
+        entry: cargo clippy --all-features --all-targets -- -D warnings
         language: system
         types: [rust]
         pass_filenames: false
