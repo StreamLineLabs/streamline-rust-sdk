@@ -1,13 +1,16 @@
 //! Administrative operations for Streamline.
 //!
-//! The [`Admin`] client provides topic management, consumer group
-//! inspection, and cluster metadata operations.
+//! The Kafka-protocol [`Admin`] surface is reserved for topic management,
+//! consumer group inspection, and cluster metadata operations. In version
+//! 0.4.0 these methods return [`ErrorKind::Unsupported`] without opening a
+//! broker connection. The `http-admin` feature provides implemented HTTP
+//! operations.
 //!
 //! # Example
 //!
 //! ```rust,no_run
 //! use streamline_client::Streamline;
-//! use streamline_client::admin::{Admin, TopicConfig};
+//! use streamline_client::ErrorKind;
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<(), streamline_client::Error> {
@@ -16,21 +19,8 @@
 //!         .build()
 //!         .await?;
 //!
-//!     let admin = client.admin();
-//!
-//!     // Create a topic
-//!     admin.create_topic(TopicConfig {
-//!         name: "events".to_string(),
-//!         num_partitions: 3,
-//!         replication_factor: 1,
-//!         config: Default::default(),
-//!     }).await?;
-//!
-//!     // List topics
-//!     let topics = admin.list_topics().await?;
-//!     for topic in &topics {
-//!         println!("{} ({} partitions)", topic.name, topic.partitions);
-//!     }
+//!     let error = client.admin().list_topics().await.unwrap_err();
+//!     assert_eq!(error.kind, ErrorKind::Unsupported);
 //!
 //!     Ok(())
 //! }
@@ -137,8 +127,11 @@ pub struct ConsumerGroupInfo {
 
 /// Administrative client for Streamline cluster operations.
 ///
-/// Provides topic management, consumer group inspection, and cluster
-/// metadata queries. Obtained via [`Streamline::admin()`](crate::Streamline::admin).
+/// Reserved Kafka-protocol admin surface.
+///
+/// Version 0.4.0 returns [`ErrorKind::Unsupported`] from every operation
+/// without opening a broker connection. Obtained via
+/// [`Streamline::admin()`](crate::Streamline::admin).
 pub struct Admin {
     _config: Arc<StreamlineConfig>,
     pool: Arc<ConnectionPool>,
@@ -146,7 +139,10 @@ pub struct Admin {
 
 impl Admin {
     pub(crate) fn new(config: Arc<StreamlineConfig>, pool: Arc<ConnectionPool>) -> Self {
-        Self { _config: config, pool: pool }
+        Self {
+            _config: config,
+            pool,
+        }
     }
 
     /// Creates a new topic.
@@ -158,7 +154,14 @@ impl Admin {
                 "Number of partitions must be at least 1",
             ));
         }
-        self.pool.create_topic(&config.name, config.num_partitions, config.replication_factor, &config.config).await
+        self.pool
+            .create_topic(
+                &config.name,
+                config.num_partitions,
+                config.replication_factor,
+                &config.config,
+            )
+            .await
     }
 
     /// Deletes a topic.

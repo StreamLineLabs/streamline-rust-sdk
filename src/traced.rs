@@ -2,24 +2,45 @@
 //!
 //! [`TracedProducer`] and [`TracedConsumer`] delegate all operations to the
 //! underlying producer/consumer and add tracing spans around I/O operations
-//! (`send`, `send_batch`, `poll`). Non-I/O methods (transactions, commit,
-//! seek, etc.) are pure passthrough with zero tracing overhead.
+//! (`send`, `send_batch`, `poll`). Other methods are passthroughs, including
+//! the explicit unsupported errors returned for transactions, consumer group
+//! commits, and latest-offset lookup.
 //!
 //! # Example
 //!
-//! ```rust,ignore
+//! ```rust,no_run
 //! use streamline_client::traced::{TracedProducer, TracedConsumer};
-//! use streamline_client::Headers;
+//! use streamline_client::{Headers, Streamline};
 //! use std::time::Duration;
 //!
-//! // Wrap an existing producer
-//! let traced = TracedProducer::new(producer);
-//! let metadata = traced.send("orders", "key", "value", Headers::new()).await?;
+//! #[tokio::main]
+//! async fn main() -> Result<(), streamline_client::Error> {
+//!     let client = Streamline::builder()
+//!         .bootstrap_servers("localhost:9092")
+//!         .build()
+//!         .await?;
 //!
-//! // Wrap an existing consumer
-//! let mut traced = TracedConsumer::new(consumer);
-//! traced.subscribe().await?;
-//! let records = traced.poll(Duration::from_millis(100)).await?;
+//!     let producer = client.producer::<String, String>();
+//!     let traced = TracedProducer::new(producer);
+//!     traced
+//!         .send(
+//!             "orders",
+//!             "key".to_string(),
+//!             "value".to_string(),
+//!             Headers::new(),
+//!         )
+//!         .await?;
+//!
+//!     let consumer = client
+//!         .consumer::<Vec<u8>, Vec<u8>>("events")
+//!         .partitions(vec![0])
+//!         .build()
+//!         .await?;
+//!     let mut traced = TracedConsumer::new(consumer);
+//!     traced.subscribe().await?;
+//!     let _records = traced.poll(Duration::from_millis(100)).await?;
+//!     Ok(())
+//! }
 //! ```
 
 use crate::consumer::{Consumer, ConsumerRecord};
@@ -33,8 +54,7 @@ use std::time::Duration;
 /// A producer wrapper that adds tracing spans around send operations.
 ///
 /// All I/O methods ([`send`](Self::send), [`send_batch`](Self::send_batch))
-/// are traced via [`trace_produce`]. Non-I/O methods (transactions, flush,
-/// config) are pure delegation.
+/// are traced via [`trace_produce`]. Other methods are pure delegation.
 pub struct TracedProducer<K, V> {
     inner: Producer<K, V>,
 }
@@ -65,26 +85,22 @@ impl<K: AsRef<[u8]> + Send, V: AsRef<[u8]> + Send> TracedProducer<K, V> {
         trace_produce(topic, || self.inner.send_batch(topic, records)).await
     }
 
-    /// Begins a new transaction.
+    /// Returns an unsupported error because transactions are not implemented.
     pub fn begin_transaction(&mut self) -> Result<()> {
         self.inner.begin_transaction()
     }
 
-    /// Buffers a record within the current transaction.
-    pub fn send_transactional(
-        &mut self,
-        topic: &str,
-        record: ProducerRecord<K, V>,
-    ) -> Result<()> {
+    /// Returns an unsupported error without buffering the record.
+    pub fn send_transactional(&mut self, topic: &str, record: ProducerRecord<K, V>) -> Result<()> {
         self.inner.send_transactional(topic, record)
     }
 
-    /// Commits the current transaction, sending all buffered records.
+    /// Returns an unsupported error without sending records.
     pub async fn commit_transaction(&mut self) -> Result<Vec<RecordMetadata>> {
         self.inner.commit_transaction().await
     }
 
-    /// Aborts the current transaction, discarding all buffered records.
+    /// Returns an unsupported error because transactions are not implemented.
     pub fn abort_transaction(&mut self) -> Result<()> {
         self.inner.abort_transaction()
     }
@@ -143,17 +159,13 @@ impl<K, V> TracedConsumer<K, V> {
         trace_consume(self.inner.topic(), || self.inner.poll(timeout)).await
     }
 
-    /// Commits the current offsets.
+    /// Returns an unsupported error because consumer groups are not implemented.
     pub async fn commit(&self) -> Result<()> {
         self.inner.commit().await
     }
 
-    /// Commits offsets asynchronously in a background task.
-    pub fn commit_async(&self)
-    where
-        K: Send + 'static,
-        V: Send + 'static,
-    {
+    /// Returns an unsupported error because consumer groups are not implemented.
+    pub fn commit_async(&self) -> Result<()> {
         self.inner.commit_async()
     }
 
@@ -162,7 +174,7 @@ impl<K, V> TracedConsumer<K, V> {
         self.inner.seek_to_beginning().await
     }
 
-    /// Seeks to the end of all partitions.
+    /// Returns an unsupported error because latest-offset lookup is not implemented.
     pub async fn seek_to_end(&self) -> Result<()> {
         self.inner.seek_to_end().await
     }

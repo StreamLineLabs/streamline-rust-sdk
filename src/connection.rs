@@ -231,8 +231,8 @@ impl ConnectionPool {
 
     // -- Admin operations (delegated from Admin client) --
     //
-    // NOTE: These operations are stubs pending Kafka-protocol wiring (see
-    // Roadmap item #4 in DX_AUDIT.md). They previously returned `Ok(default)`
+    // NOTE: These operations are stubs pending Kafka-protocol wiring. They
+    // previously returned `Ok(default)`
     // which silently misled callers into believing a topic had been created
     // when no frame was ever sent. They now fail loudly with
     // `ErrorKind::Unsupported` so calling code surfaces the gap rather than
@@ -245,58 +245,58 @@ impl ConnectionPool {
         replication_factor: i16,
         config: &std::collections::HashMap<String, String>,
     ) -> Result<()> {
-        let _conn = self.get().await?;
         warn!(
             "create_topic stub invoked: name={} partitions={} rf={} config_entries={}",
-            name, num_partitions, replication_factor, config.len()
+            name,
+            num_partitions,
+            replication_factor,
+            config.len()
         );
         Err(Error::unsupported("admin.create_topic"))
     }
 
     pub(crate) async fn delete_topic(&self, name: &str) -> Result<()> {
-        let _conn = self.get().await?;
         warn!("delete_topic stub invoked: {}", name);
         Err(Error::unsupported("admin.delete_topic"))
     }
 
     pub(crate) async fn list_topics(&self) -> Result<Vec<crate::admin::TopicInfo>> {
-        let _conn = self.get().await?;
         warn!("list_topics stub invoked");
         Err(Error::unsupported("admin.list_topics"))
     }
 
-    pub(crate) async fn describe_topic(&self, name: &str) -> Result<(crate::admin::TopicInfo, Vec<crate::admin::PartitionInfo>)> {
-        let _conn = self.get().await?;
+    pub(crate) async fn describe_topic(
+        &self,
+        name: &str,
+    ) -> Result<(crate::admin::TopicInfo, Vec<crate::admin::PartitionInfo>)> {
         warn!("describe_topic stub invoked: {}", name);
         Err(Error::unsupported("admin.describe_topic"))
     }
 
     pub(crate) async fn add_partitions(&self, name: &str, total_count: i32) -> Result<()> {
-        let _conn = self.get().await?;
         warn!("add_partitions stub invoked: {} -> {}", name, total_count);
         Err(Error::unsupported("admin.add_partitions"))
     }
 
     pub(crate) async fn list_consumer_groups(&self) -> Result<Vec<String>> {
-        let _conn = self.get().await?;
         warn!("list_consumer_groups stub invoked");
         Err(Error::unsupported("admin.list_consumer_groups"))
     }
 
-    pub(crate) async fn describe_consumer_group(&self, group_id: &str) -> Result<crate::admin::ConsumerGroupInfo> {
-        let _conn = self.get().await?;
+    pub(crate) async fn describe_consumer_group(
+        &self,
+        group_id: &str,
+    ) -> Result<crate::admin::ConsumerGroupInfo> {
         warn!("describe_consumer_group stub invoked: {}", group_id);
         Err(Error::unsupported("admin.describe_consumer_group"))
     }
 
     pub(crate) async fn delete_consumer_group(&self, group_id: &str) -> Result<()> {
-        let _conn = self.get().await?;
         warn!("delete_consumer_group stub invoked: {}", group_id);
         Err(Error::unsupported("admin.delete_consumer_group"))
     }
 
     pub(crate) async fn list_brokers(&self) -> Result<Vec<crate::admin::BrokerInfo>> {
-        let _conn = self.get().await?;
         warn!("list_brokers stub invoked");
         Err(Error::unsupported("admin.list_brokers"))
     }
@@ -538,5 +538,31 @@ mod tests {
         let idx = pool.next.load(Ordering::Relaxed) % pool.connections.len();
         assert_eq!(idx, 7 % 3);
     }
-}
 
+    #[tokio::test]
+    async fn test_admin_stubs_fail_closed_without_connecting() {
+        let pool = ConnectionPool::new(&test_config(1));
+        let topic_config = std::collections::HashMap::new();
+
+        let create = pool.create_topic("events", 1, 1, &topic_config).await;
+        let delete = pool.delete_topic("events").await;
+        let list = pool.list_topics().await;
+        let describe = pool.describe_topic("events").await;
+        let partitions = pool.add_partitions("events", 2).await;
+        let groups = pool.list_consumer_groups().await;
+        let group = pool.describe_consumer_group("group").await;
+        let delete_group = pool.delete_consumer_group("group").await;
+        let brokers = pool.list_brokers().await;
+
+        assert_eq!(create.unwrap_err().kind, ErrorKind::Unsupported);
+        assert_eq!(delete.unwrap_err().kind, ErrorKind::Unsupported);
+        assert_eq!(list.unwrap_err().kind, ErrorKind::Unsupported);
+        assert_eq!(describe.unwrap_err().kind, ErrorKind::Unsupported);
+        assert_eq!(partitions.unwrap_err().kind, ErrorKind::Unsupported);
+        assert_eq!(groups.unwrap_err().kind, ErrorKind::Unsupported);
+        assert_eq!(group.unwrap_err().kind, ErrorKind::Unsupported);
+        assert_eq!(delete_group.unwrap_err().kind, ErrorKind::Unsupported);
+        assert_eq!(brokers.unwrap_err().kind, ErrorKind::Unsupported);
+        assert!(!pool.is_healthy().await);
+    }
+}

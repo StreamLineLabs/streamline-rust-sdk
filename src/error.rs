@@ -12,6 +12,8 @@ pub enum ErrorKind {
     TopicNotFound,
     /// Partition not found
     PartitionNotFound,
+    /// Requested offset is outside the retained log range
+    OffsetOutOfRange,
     /// Connection failed
     ConnectionFailed,
     /// General connection error
@@ -92,11 +94,14 @@ impl Error {
 
     /// Creates a topic not found error.
     pub fn topic_not_found(topic: &str) -> Self {
-        Self::new(ErrorKind::TopicNotFound, format!("Topic not found: {}", topic))
-            .with_hint(format!(
-                "Create the topic with: streamline-cli topics create {}",
-                topic
-            ))
+        Self::new(
+            ErrorKind::TopicNotFound,
+            format!("Topic not found: {}", topic),
+        )
+        .with_hint(format!(
+            "Create the topic with: streamline-cli topics create {}",
+            topic
+        ))
     }
 
     /// Creates a partition not found error.
@@ -113,14 +118,20 @@ impl Error {
 
     /// Creates a connection error.
     pub fn connection_failed(server: &str) -> Self {
-        Self::new(ErrorKind::ConnectionFailed, format!("Failed to connect to {}", server))
-            .with_hint("Check that Streamline server is running and accessible")
+        Self::new(
+            ErrorKind::ConnectionFailed,
+            format!("Failed to connect to {}", server),
+        )
+        .with_hint("Check that Streamline server is running and accessible")
     }
 
     /// Creates a timeout error.
     pub fn timeout(operation: &str) -> Self {
-        Self::new(ErrorKind::Timeout, format!("Operation timed out: {}", operation))
-            .with_hint("Consider increasing timeout settings or checking server load")
+        Self::new(
+            ErrorKind::Timeout,
+            format!("Operation timed out: {}", operation),
+        )
+        .with_hint("Consider increasing timeout settings or checking server load")
     }
 
     /// Creates a generic connection error.
@@ -145,7 +156,10 @@ impl Error {
     pub fn unsupported(operation: &str) -> Self {
         Self::new(
             ErrorKind::Unsupported,
-            format!("Operation '{}' is not yet implemented in the Rust SDK", operation),
+            format!(
+                "Operation '{}' is not yet implemented in the Rust SDK",
+                operation
+            ),
         )
         .with_hint(
             "Track progress at https://github.com/streamlinelabs/streamline-rust-sdk \
@@ -202,7 +216,11 @@ impl Error {
     pub fn is_retryable(&self) -> bool {
         matches!(
             self.kind,
-            ErrorKind::Connection | ErrorKind::ConnectionFailed | ErrorKind::Timeout | ErrorKind::Server | ErrorKind::SemanticSearchUnavailable
+            ErrorKind::Connection
+                | ErrorKind::ConnectionFailed
+                | ErrorKind::Timeout
+                | ErrorKind::Server
+                | ErrorKind::SemanticSearchUnavailable
         )
     }
 }
@@ -250,16 +268,14 @@ mod tests {
 
     #[test]
     fn test_error_with_hint() {
-        let err = Error::new(ErrorKind::Timeout, "timed out")
-            .with_hint("increase timeout");
+        let err = Error::new(ErrorKind::Timeout, "timed out").with_hint("increase timeout");
         assert_eq!(err.hint.as_deref(), Some("increase timeout"));
     }
 
     #[test]
     fn test_error_with_source() {
         let io_err = std::io::Error::new(std::io::ErrorKind::ConnectionRefused, "refused");
-        let err = Error::new(ErrorKind::ConnectionFailed, "connect failed")
-            .with_source(io_err);
+        let err = Error::new(ErrorKind::ConnectionFailed, "connect failed").with_source(io_err);
         assert!(err.source.is_some());
     }
 
@@ -303,8 +319,7 @@ mod tests {
 
     #[test]
     fn test_display_with_hint() {
-        let err = Error::new(ErrorKind::Internal, "bad state")
-            .with_hint("restart server");
+        let err = Error::new(ErrorKind::Internal, "bad state").with_hint("restart server");
         let msg = format!("{}", err);
         assert!(msg.contains("bad state"));
         assert!(msg.contains("restart server"));
@@ -325,7 +340,7 @@ mod tests {
 
     #[test]
     fn test_std_error_trait() {
-        let io_err = std::io::Error::new(std::io::ErrorKind::Other, "cause");
+        let io_err = std::io::Error::other("cause");
         let err = Error::new(ErrorKind::Internal, "wrapper").with_source(io_err);
         let source = std::error::Error::source(&err);
         assert!(source.is_some());
@@ -338,4 +353,3 @@ mod tests {
         assert!(source.is_none());
     }
 }
-
