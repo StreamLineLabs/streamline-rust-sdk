@@ -11,7 +11,7 @@ Start Streamline:
 
 ```bash
 # Via Docker
-docker run -p 9092:9092 -p 9094:9094 ghcr.io/streamlinelabs/streamline:0.2.0 --playground
+docker run -p 9092:9092 -p 9094:9094 ghcr.io/streamlinelabs/streamline:0.4.0 --playground
 
 # Or via Homebrew
 streamline --playground

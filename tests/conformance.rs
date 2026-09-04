@@ -23,6 +23,11 @@ async fn client() -> Streamline {
 }
 
 #[test]
+fn package_version_is_0_4_0() {
+    assert_eq!(env!("CARGO_PKG_VERSION"), "0.4.0");
+}
+
+#[test]
 fn config_debug_never_exposes_sasl_credentials() {
     let config = StreamlineConfig {
         security_protocol: SecurityProtocol::SaslPlaintext,
