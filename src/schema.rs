@@ -6,7 +6,7 @@
 //!
 //! ```toml
 //! [dependencies]
-//! streamline-client = { version = "0.2", features = ["schema-registry-tls"] }
+//! streamline-client = { version = "0.4.0", features = ["schema-registry-tls"] }
 //! ```
 
 use serde::{Deserialize, Serialize};
@@ -68,6 +68,10 @@ pub struct SchemaRegistryClient {
 
 impl SchemaRegistryClient {
     /// Create a new Schema Registry client.
+    ///
+    /// The base URL is validated when a request URL is built, so an invalid
+    /// or non-HTTP base surfaces as [`ErrorKind::InvalidConfiguration`] from
+    /// the call instead of being concatenated into a request target.
     pub fn new(base_url: &str) -> Self {
         Self {
             base_url: base_url.trim_end_matches('/').to_string(),
@@ -83,6 +87,17 @@ impl SchemaRegistryClient {
         &self.base_url
     }
 
+    /// Builds a request URL from percent-encoded path segments, rejecting
+    /// empty and dot path segments.
+    fn url(&self, segments: &[&str]) -> crate::error::Result<reqwest::Url> {
+        crate::http_url::build_url(&self.base_url, segments, &[])
+    }
+
+    /// Validates a subject name used as a URL path segment.
+    fn validate_subject(subject: &str) -> crate::error::Result<()> {
+        crate::http_url::validate_path_segment("Schema registry subject", subject)
+    }
+
     /// Register a schema under the given subject and return the schema ID.
     pub async fn register(
         &self,
@@ -90,7 +105,8 @@ impl SchemaRegistryClient {
         schema: &str,
         schema_type: SchemaType,
     ) -> Result<i32, Error> {
-        let url = format!("{}/subjects/{}/versions", self.base_url, subject);
+        Self::validate_subject(subject)?;
+        let url = self.url(&["subjects", subject, "versions"])?;
         let req = RegisterSchemaRequest {
             schema: schema.to_string(),
             schema_type,
@@ -98,7 +114,7 @@ impl SchemaRegistryClient {
 
         let resp = self
             .client
-            .post(&url)
+            .post(url)
             .json(&req)
             .send()
             .await
@@ -123,10 +139,10 @@ impl SchemaRegistryClient {
 
     /// Retrieve a schema by its global ID.
     pub async fn get_schema(&self, id: i32) -> Result<Schema, Error> {
-        let url = format!("{}/schemas/ids/{}", self.base_url, id);
+        let url = self.url(&["schemas", "ids", &id.to_string()])?;
         let resp = self
             .client
-            .get(&url)
+            .get(url)
             .send()
             .await
             .map_err(|e| Error::new(ErrorKind::Connection, format!("get schema: {e}")))?;
@@ -154,10 +170,11 @@ impl SchemaRegistryClient {
 
     /// List all version numbers registered under a subject.
     pub async fn get_versions(&self, subject: &str) -> Result<Vec<i32>, Error> {
-        let url = format!("{}/subjects/{}/versions", self.base_url, subject);
+        Self::validate_subject(subject)?;
+        let url = self.url(&["subjects", subject, "versions"])?;
         let resp = self
             .client
-            .get(&url)
+            .get(url)
             .send()
             .await
             .map_err(|e| Error::new(ErrorKind::Connection, format!("get versions: {e}")))?;
@@ -187,22 +204,17 @@ impl SchemaRegistryClient {
         schema: &str,
         schema_type: SchemaType,
     ) -> Result<bool, Error> {
-        let url = format!(
-            "{}/compatibility/subjects/{}/versions/latest",
-            self.base_url, subject
-        );
+        Self::validate_subject(subject)?;
+        let url = self.url(&["compatibility", "subjects", subject, "versions", "latest"])?;
         let req = RegisterSchemaRequest {
             schema: schema.to_string(),
             schema_type,
         };
 
-        let resp = self
-            .client
-            .post(&url)
-            .json(&req)
-            .send()
-            .await
-            .map_err(|e| Error::new(ErrorKind::Connection, format!("compatibility check: {e}")))?;
+        let resp =
+            self.client.post(url).json(&req).send().await.map_err(|e| {
+                Error::new(ErrorKind::Connection, format!("compatibility check: {e}"))
+            })?;
 
         if resp.status().as_u16() == 404 {
             return Ok(true);
@@ -227,10 +239,10 @@ impl SchemaRegistryClient {
 
     /// List all registered subjects.
     pub async fn get_subjects(&self) -> Result<Vec<String>, Error> {
-        let url = format!("{}/subjects", self.base_url);
+        let url = self.url(&["subjects"])?;
         let resp = self
             .client
-            .get(&url)
+            .get(url)
             .send()
             .await
             .map_err(|e| Error::new(ErrorKind::Connection, format!("get subjects: {e}")))?;
@@ -251,10 +263,11 @@ impl SchemaRegistryClient {
 
     /// Delete a subject and all its versions.
     pub async fn delete_subject(&self, subject: &str) -> Result<Vec<i32>, Error> {
-        let url = format!("{}/subjects/{}", self.base_url, subject);
+        Self::validate_subject(subject)?;
+        let url = self.url(&["subjects", subject])?;
         let resp = self
             .client
-            .delete(&url)
+            .delete(url)
             .send()
             .await
             .map_err(|e| Error::new(ErrorKind::Connection, format!("delete subject: {e}")))?;
@@ -294,6 +307,62 @@ mod tests {
     fn test_schema_registry_strips_multiple_trailing_slashes() {
         let client = SchemaRegistryClient::new("http://localhost:9094///");
         assert_eq!(client.base_url(), "http://localhost:9094");
+    }
+
+    #[test]
+    fn test_schema_registry_encodes_reserved_characters_in_subject() {
+        let client = SchemaRegistryClient::new("http://localhost:9094");
+        let url = client
+            .url(&["subjects", "orders/../admin?x=1#f", "versions"])
+            .unwrap();
+        assert_eq!(
+            url.as_str(),
+            "http://localhost:9094/subjects/orders%2F..%2Fadmin%3Fx=1%23f/versions"
+        );
+        assert!(url.query().is_none());
+        assert_eq!(url.path_segments().unwrap().count(), 3);
+    }
+
+    #[test]
+    fn test_schema_registry_rejects_dot_segment_subjects() {
+        for subject in [".", ".."] {
+            let error = SchemaRegistryClient::validate_subject(subject).unwrap_err();
+            assert_eq!(error.kind, ErrorKind::InvalidConfiguration);
+        }
+        assert!(SchemaRegistryClient::validate_subject("orders-value").is_ok());
+        assert!(SchemaRegistryClient::validate_subject("").is_err());
+    }
+
+    #[tokio::test]
+    async fn test_schema_registry_rejects_dot_segments_before_any_request() {
+        // Unroutable base URL: rejected arguments must fail before any I/O.
+        let client = SchemaRegistryClient::new("http://192.0.2.1:9094");
+        for subject in [".", "..", ""] {
+            let error = client
+                .register(subject, "{}", SchemaType::Json)
+                .await
+                .unwrap_err();
+            assert_eq!(error.kind, ErrorKind::InvalidConfiguration);
+
+            let error = client.get_versions(subject).await.unwrap_err();
+            assert_eq!(error.kind, ErrorKind::InvalidConfiguration);
+
+            let error = client.delete_subject(subject).await.unwrap_err();
+            assert_eq!(error.kind, ErrorKind::InvalidConfiguration);
+
+            let error = client
+                .check_compatibility(subject, "{}", SchemaType::Json)
+                .await
+                .unwrap_err();
+            assert_eq!(error.kind, ErrorKind::InvalidConfiguration);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_schema_registry_rejects_invalid_base_url() {
+        let client = SchemaRegistryClient::new("not-a-url");
+        let error = client.get_subjects().await.unwrap_err();
+        assert_eq!(error.kind, ErrorKind::InvalidConfiguration);
     }
 
     #[test]

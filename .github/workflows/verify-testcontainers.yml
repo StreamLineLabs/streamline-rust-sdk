@@ -1,0 +1,66 @@
+name: Verify Testcontainers (source-only)
+
+# `streamline-testcontainers` is a source-only crate: it sets `publish = false`
+# and is NOT released to crates.io. There is deliberately no tag-triggered
+# publish job here — publishing it would require a dependency-first release
+# order (streamline-client on crates.io, then a version-bearing dependency),
+# which this repository does not implement. This workflow only verifies the
+# crate builds, lints, and tests from source.
+
+on:
+  push:
+    paths:
+      - "testcontainers/**"
+      - ".github/workflows/verify-testcontainers.yml"
+  pull_request:
+    paths:
+      - "testcontainers/**"
+      - ".github/workflows/verify-testcontainers.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Verify source-only crate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.88"
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: testcontainers
+
+      - name: Assert the crate stays unpublished
+        run: |
+          set -euo pipefail
+          if ! grep -Eq '^publish = false$' testcontainers/Cargo.toml; then
+            echo "::error::testcontainers/Cargo.toml must keep 'publish = false'." \
+                 "This crate depends on streamline-client by path and has no" \
+                 "dependency-first release workflow, so it must not be published."
+            exit 1
+          fi
+          published="$(cargo metadata --manifest-path testcontainers/Cargo.toml --no-deps --format-version 1 \
+            | jq -r '.packages[] | select(.name == "streamline-testcontainers") | .publish')"
+          if [ "$published" != "[]" ]; then
+            echo "::error::cargo metadata reports publish=$published; expected [] (publishing disabled)"
+            exit 1
+          fi
+
+      - name: Assert no crates.io install instructions are advertised
+        run: |
+          set -euo pipefail
+          if grep -Eq '^[[:space:]]*streamline-testcontainers[[:space:]]*=[[:space:]]*"' testcontainers/README.md README.md; then
+            echo "::error::Documentation advertises a registry dependency on streamline-testcontainers," \
+                 "which is not published. Use a path or git dependency instead."
+            exit 1
+          fi
+
+      - run: cargo fmt --manifest-path testcontainers/Cargo.toml --all -- --check
+      - run: cargo check --manifest-path testcontainers/Cargo.toml --locked --all-features
+      - run: cargo clippy --manifest-path testcontainers/Cargo.toml --locked --all-features --all-targets -- -D warnings
+      - run: cargo test --manifest-path testcontainers/Cargo.toml --locked --all-features

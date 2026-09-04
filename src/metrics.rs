@@ -56,7 +56,8 @@ impl ClientMetrics {
 
     /// Record a successful produce operation.
     pub fn record_produce(&self, message_count: u64, bytes: u64, latency_ms: f64) {
-        self.messages_produced.fetch_add(message_count, Ordering::Relaxed);
+        self.messages_produced
+            .fetch_add(message_count, Ordering::Relaxed);
         self.bytes_sent.fetch_add(bytes, Ordering::Relaxed);
         if let Ok(mut lt) = self.latency.lock() {
             lt.produce_sum += latency_ms;
@@ -66,7 +67,8 @@ impl ClientMetrics {
 
     /// Record a successful consume operation.
     pub fn record_consume(&self, message_count: u64, bytes: u64, latency_ms: f64) {
-        self.messages_consumed.fetch_add(message_count, Ordering::Relaxed);
+        self.messages_consumed
+            .fetch_add(message_count, Ordering::Relaxed);
         self.bytes_received.fetch_add(bytes, Ordering::Relaxed);
         if let Ok(mut lt) = self.latency.lock() {
             lt.consume_sum += latency_ms;
@@ -82,8 +84,16 @@ impl ClientMetrics {
     /// Get a point-in-time snapshot.
     pub fn snapshot(&self) -> MetricsSnapshot {
         let (produce_avg, consume_avg) = if let Ok(lt) = self.latency.lock() {
-            let pa = if lt.produce_count > 0 { lt.produce_sum / lt.produce_count as f64 } else { 0.0 };
-            let ca = if lt.consume_count > 0 { lt.consume_sum / lt.consume_count as f64 } else { 0.0 };
+            let pa = if lt.produce_count > 0 {
+                lt.produce_sum / lt.produce_count as f64
+            } else {
+                0.0
+            };
+            let ca = if lt.consume_count > 0 {
+                lt.consume_sum / lt.consume_count as f64
+            } else {
+                0.0
+            };
             (pa, ca)
         } else {
             (0.0, 0.0)

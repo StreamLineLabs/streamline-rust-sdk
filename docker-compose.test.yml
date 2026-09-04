@@ -1,9 +1,15 @@
-# Docker Compose for integration testing
-# Usage: docker compose -f docker-compose.test.yml up -d
-version: "3.8"
+# Docker Compose for integration testing.
+#
+# The image is intentionally not hard-coded to a mutable tag: set
+# STREAMLINE_TEST_IMAGE to an immutable digest reference, matching what CI
+# uses, so local and CI runs test the same bits.
+#
+# Usage:
+#   STREAMLINE_TEST_IMAGE=ghcr.io/streamlinelabs/streamline@sha256:<64 hex digits> \
+#     docker compose -f docker-compose.test.yml up -d
 services:
   streamline:
-    image: ghcr.io/streamlinelabs/streamline:0.3.0
+    image: ${STREAMLINE_TEST_IMAGE:?set STREAMLINE_TEST_IMAGE to an immutable image digest}
     ports:
       - "9092:9092"
       - "9094:9094"

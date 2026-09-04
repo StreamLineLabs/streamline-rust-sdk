@@ -46,9 +46,7 @@ fn test_error_with_hint() {
 #[test]
 fn test_error_source_chain() {
     let io_err = std::io::Error::new(std::io::ErrorKind::ConnectionRefused, "refused");
-    let err = Error::new(ErrorKind::ConnectionFailed, "connection failed")
-        .with_source(io_err);
-
+    let err = Error::new(ErrorKind::ConnectionFailed, "connection failed").with_source(io_err);
 
     // std::error::Error::source returns the underlying cause
     let source = std::error::Error::source(&err);
@@ -126,8 +124,7 @@ fn test_error_display_without_hint() {
 
 #[test]
 fn test_error_display_with_hint() {
-    let err = Error::new(ErrorKind::Protocol, "bad frame")
-        .with_hint("check protocol version");
+    let err = Error::new(ErrorKind::Protocol, "bad frame").with_hint("check protocol version");
     let display = format!("{}", err);
     assert!(display.contains("bad frame"));
     assert!(display.contains("hint: check protocol version"));
@@ -171,7 +168,7 @@ fn test_error_debug() {
 fn test_error_kind_copy_clone() {
     let kind = ErrorKind::ConnectionFailed;
     let copied = kind;
-    let cloned = kind.clone();
+    let cloned = kind;
     assert_eq!(kind, copied);
     assert_eq!(kind, cloned);
 }
@@ -195,4 +192,3 @@ fn test_invalid_configuration_error() {
     assert_eq!(err.kind, ErrorKind::InvalidConfiguration);
     assert!(err.message.contains("bootstrap_servers"));
 }
-

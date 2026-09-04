@@ -15,8 +15,8 @@ async fn main() -> Result<(), streamline_client::Error> {
     println!("Circuit Breaker Example");
     println!("{}", "=".repeat(40));
 
-    let bootstrap = std::env::var("STREAMLINE_BOOTSTRAP_SERVERS")
-        .unwrap_or_else(|_| "localhost:9092".into());
+    let bootstrap =
+        std::env::var("STREAMLINE_BOOTSTRAP_SERVERS").unwrap_or_else(|_| "localhost:9092".into());
 
     let client = Streamline::builder()
         .bootstrap_servers(&bootstrap)
@@ -37,36 +37,33 @@ async fn main() -> Result<(), streamline_client::Error> {
         half_open_max_requests: 3,
     });
 
-    println!("Connected. Circuit state: {:?}", cb.state());
-
-    // Create a topic
-    let admin = client.admin();
-    let _ = admin
-        .create_topic(streamline_client::TopicConfig::new("cb-example").partitions(1))
-        .await;
+    println!("Client configured. Circuit state: {:?}", cb.state());
+    println!("The 'cb-example' topic must already exist.");
 
     // Send messages through the circuit breaker
     for i in 0..20 {
-        if let Err(_) = cb.check() {
+        if cb.check().is_err() {
             println!("  Message {i}: REJECTED (circuit open)");
             tokio::time::sleep(Duration::from_secs(1)).await;
             continue;
         }
 
-        match client.produce("cb-example", &format!("key-{i}"), &format!("message-{i}")).await {
+        match client
+            .produce("cb-example", &format!("key-{i}"), &format!("message-{i}"))
+            .await
+        {
             Ok(metadata) => {
                 cb.record_success();
                 println!(
                     "  Message {i}: sent to partition={} offset={} (circuit: {:?})",
-                    metadata.partition, metadata.offset, cb.state()
+                    metadata.partition,
+                    metadata.offset,
+                    cb.state()
                 );
             }
             Err(e) => {
                 cb.record_failure();
-                println!(
-                    "  Message {i}: FAILED ({e}) (circuit: {:?})",
-                    cb.state()
-                );
+                println!("  Message {i}: FAILED ({e}) (circuit: {:?})", cb.state());
             }
         }
     }

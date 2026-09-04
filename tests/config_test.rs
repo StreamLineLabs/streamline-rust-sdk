@@ -65,7 +65,7 @@ fn test_consumer_config_default() {
     let config = ConsumerConfig::default();
     assert!(config.group_id.is_none());
     assert_eq!(config.auto_offset_reset, "earliest");
-    assert!(config.enable_auto_commit);
+    assert!(!config.enable_auto_commit);
     assert_eq!(config.auto_commit_interval, Duration::from_secs(5));
     assert_eq!(config.session_timeout, Duration::from_secs(30));
     assert_eq!(config.heartbeat_interval, Duration::from_secs(3));

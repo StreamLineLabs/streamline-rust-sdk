@@ -1,6 +1,5 @@
 # Build output
 target/
-Cargo.lock
 
 # OS files
 .DS_Store

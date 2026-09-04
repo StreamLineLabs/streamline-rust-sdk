@@ -4,61 +4,84 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  ci:
+  quality:
+    name: Quality and tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: "1.80"
           components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
 
-      - run: cargo fmt --all -- --check
-      - run: cargo clippy --all-targets -- -D warnings
-      - run: cargo build --all-targets
-      - name: Verify examples compile
-        run: |
-          for example in examples/*.rs; do
-            echo "Checking $example..."
-            cargo check --example "$(basename "$example" .rs)" 2>/dev/null || echo "Standalone example $example (non-blocking)"
-          done
-      - run: cargo test
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Check minimal feature graph
+        run: cargo check --no-default-features
+      - name: Check complete feature graph
+        run: cargo check --all-features --all-targets
+      - name: Clippy without default features
+        run: cargo clippy --no-default-features --lib --tests -- -D warnings
+      - name: Clippy with all features and targets
+        run: cargo clippy --all-features --all-targets -- -D warnings
+      - name: Unit and conformance tests without default features
+        run: cargo test --no-default-features --lib --tests
+      - name: Unit, integration-target, and example tests with all features
+        run: cargo test --all-features --all-targets
+      - name: Documentation tests
+        run: cargo test --all-features --doc
+      - name: Build documentation
+        run: cargo doc --all-features --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
+      - name: Verify main crate package
+        run: cargo package --locked
 
-  conformance:
+  msrv:
+    name: MSRV 1.80
     runs-on: ubuntu-latest
-    needs: ci
     steps:
       - uses: actions/checkout@v4
-
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.80"
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --locked --all-features --all-targets
 
-      - name: Start Streamline server
-        run: docker compose -f docker-compose.test.yml up -d --wait
+  testcontainers:
+    name: Testcontainers crate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.88"
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: testcontainers
+      - run: cargo fmt --manifest-path testcontainers/Cargo.toml --all -- --check
+      - run: cargo check --manifest-path testcontainers/Cargo.toml --locked --all-features
+      - run: cargo clippy --manifest-path testcontainers/Cargo.toml --locked --all-features --all-targets -- -D warnings
+      - run: cargo test --manifest-path testcontainers/Cargo.toml --locked --all-features
 
-      - name: Wait for health check
-        run: |
-          for i in $(seq 1 30); do
-            if curl -sf http://localhost:9094/health > /dev/null 2>&1; then
-              echo "Streamline is healthy"
-              exit 0
-            fi
-            echo "Waiting for Streamline... ($i/30)"
-            sleep 2
-          done
-          echo "Streamline failed to start"
-          docker compose -f docker-compose.test.yml logs
-          exit 1
-
-      - name: Run conformance tests
-        run: cargo test --test conformance -- --ignored
-
-      - name: Stop Streamline server
-        if: always()
-        run: docker compose -f docker-compose.test.yml down -v
+  security:
+    name: Dependency policy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install security tooling
+        run: cargo install cargo-audit cargo-deny --locked
+      - run: cargo audit
+      - run: cargo audit --file testcontainers/Cargo.lock
+      - run: cargo deny check
+      - run: cargo deny --manifest-path testcontainers/Cargo.toml check

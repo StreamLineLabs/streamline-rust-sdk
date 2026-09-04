@@ -2,7 +2,9 @@
 
 use crate::admin::Admin;
 use crate::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
-use crate::config::{ConsumerConfig, ProducerConfig, SecurityProtocol, StreamlineConfig};
+use crate::config::{
+    ConsumerConfig, ProducerConfig, SaslConfig, SecurityProtocol, StreamlineConfig, TlsConfig,
+};
 use crate::connection::ConnectionPool;
 use crate::consumer::Consumer;
 use crate::error::{Error, Result};
@@ -44,7 +46,8 @@ impl Streamline {
 
     /// Produces a message to a topic.
     pub async fn produce(&self, topic: &str, key: &str, value: &str) -> Result<RecordMetadata> {
-        self.produce_with_headers(topic, key, value, Headers::new()).await
+        self.produce_with_headers(topic, key, value, Headers::new())
+            .await
     }
 
     /// Produces a message with headers.
@@ -67,9 +70,17 @@ impl Streamline {
     }
 
     /// Creates a producer with custom configuration.
-    pub fn producer_with_config<K: AsRef<[u8]> + Send, V: AsRef<[u8]> + Send>(&self, config: ProducerConfig) -> Producer<K, V> {
+    pub fn producer_with_config<K: AsRef<[u8]> + Send, V: AsRef<[u8]> + Send>(
+        &self,
+        config: ProducerConfig,
+    ) -> Producer<K, V> {
         match &self.circuit_breaker {
-            Some(cb) => Producer::with_circuit_breaker(self.config.clone(), self.pool.clone(), config, cb.clone()),
+            Some(cb) => Producer::with_circuit_breaker(
+                self.config.clone(),
+                self.pool.clone(),
+                config,
+                cb.clone(),
+            ),
             None => Producer::new(self.config.clone(), self.pool.clone(), config),
         }
     }
@@ -112,6 +123,9 @@ pub struct StreamlineBuilder {
     connection_pool_size: Option<usize>,
     connect_timeout: Option<Duration>,
     request_timeout: Option<Duration>,
+    security_protocol: SecurityProtocol,
+    tls: Option<TlsConfig>,
+    sasl: Option<SaslConfig>,
     circuit_breaker: Option<CircuitBreakerConfig>,
 }
 
@@ -148,6 +162,41 @@ impl StreamlineBuilder {
         self
     }
 
+    /// Configures TLS for the broker connection.
+    ///
+    /// TLS transport is not implemented in version 0.4.0. Calling this method
+    /// records the requested configuration so [`build`](Self::build) can fail
+    /// explicitly instead of silently opening a plaintext connection.
+    #[cfg(feature = "tls")]
+    pub fn tls_config(mut self, config: TlsConfig) -> Self {
+        self.security_protocol = match self.security_protocol {
+            SecurityProtocol::SaslPlaintext | SecurityProtocol::SaslSsl => {
+                SecurityProtocol::SaslSsl
+            }
+            SecurityProtocol::Plaintext | SecurityProtocol::Ssl => SecurityProtocol::Ssl,
+        };
+        self.tls = Some(config);
+        self
+    }
+
+    /// Configures SASL authentication for the broker connection.
+    ///
+    /// SASL authentication is not implemented in version 0.4.0. Calling this
+    /// method records the requested configuration so [`build`](Self::build)
+    /// can fail explicitly instead of silently connecting without
+    /// authentication.
+    #[cfg(feature = "sasl")]
+    pub fn sasl_config(mut self, config: SaslConfig) -> Self {
+        self.security_protocol = match self.security_protocol {
+            SecurityProtocol::Ssl | SecurityProtocol::SaslSsl => SecurityProtocol::SaslSsl,
+            SecurityProtocol::Plaintext | SecurityProtocol::SaslPlaintext => {
+                SecurityProtocol::SaslPlaintext
+            }
+        };
+        self.sasl = Some(config);
+        self
+    }
+
     /// Enables circuit breaker with default configuration.
     pub fn with_circuit_breaker(mut self) -> Self {
         self.circuit_breaker = Some(CircuitBreakerConfig::default());
@@ -162,9 +211,27 @@ impl StreamlineBuilder {
 
     /// Builds the client.
     pub async fn build(self) -> Result<Streamline> {
-        let bootstrap_servers = self
-            .bootstrap_servers
-            .ok_or_else(|| Error::new(crate::error::ErrorKind::InvalidConfiguration, "bootstrap_servers is required"))?;
+        let bootstrap_servers = self.bootstrap_servers.ok_or_else(|| {
+            Error::new(
+                crate::error::ErrorKind::InvalidConfiguration,
+                "bootstrap_servers is required",
+            )
+        })?;
+
+        match &self.security_protocol {
+            SecurityProtocol::Plaintext => {}
+            SecurityProtocol::Ssl => {
+                return Err(Error::unsupported("TLS broker transport"));
+            }
+            SecurityProtocol::SaslPlaintext => {
+                return Err(Error::unsupported("SASL broker authentication"));
+            }
+            SecurityProtocol::SaslSsl => {
+                return Err(Error::unsupported(
+                    "TLS broker transport with SASL authentication",
+                ));
+            }
+        }
 
         let config = StreamlineConfig {
             bootstrap_servers: bootstrap_servers.clone(),
@@ -172,14 +239,16 @@ impl StreamlineBuilder {
             connection_pool_size: self.connection_pool_size.unwrap_or(4),
             connect_timeout: self.connect_timeout.unwrap_or(Duration::from_secs(30)),
             request_timeout: self.request_timeout.unwrap_or(Duration::from_secs(30)),
-            security_protocol: SecurityProtocol::default(),
-            tls: None,
-            sasl: None,
+            security_protocol: self.security_protocol,
+            tls: self.tls,
+            sasl: self.sasl,
         };
 
         let config = Arc::new(config);
         let pool = Arc::new(ConnectionPool::new(&config));
-        let circuit_breaker = self.circuit_breaker.map(|cb_config| Arc::new(CircuitBreaker::new(cb_config)));
+        let circuit_breaker = self
+            .circuit_breaker
+            .map(|cb_config| Arc::new(CircuitBreaker::new(cb_config)));
 
         info!(
             "Streamline client created for {} (pool_size={}, circuit_breaker={})",
@@ -188,7 +257,11 @@ impl StreamlineBuilder {
             circuit_breaker.is_some(),
         );
 
-        Ok(Streamline { config, pool, circuit_breaker })
+        Ok(Streamline {
+            config,
+            pool,
+            circuit_breaker,
+        })
     }
 }
 
@@ -246,8 +319,8 @@ impl<K, V> ConsumerBuilder<K, V> {
 
     /// Sets the partitions to consume from.
     ///
-    /// If not specified, partitions are discovered via topic metadata on
-    /// subscribe, falling back to partition 0.
+    /// Version 0.4.0 requires at least one explicit partition because topic
+    /// metadata discovery is not implemented.
     pub fn partitions(mut self, partitions: Vec<i32>) -> Self {
         self.partitions = partitions;
         self
@@ -255,6 +328,33 @@ impl<K, V> ConsumerBuilder<K, V> {
 
     /// Builds the consumer.
     pub async fn build(self) -> Result<Consumer<K, V>> {
+        if self.config.group_id.is_some() {
+            return Err(Error::unsupported("consumer group coordination"));
+        }
+        if self.config.enable_auto_commit {
+            return Err(Error::unsupported("consumer automatic offset commits"));
+        }
+        match self.config.auto_offset_reset.as_str() {
+            "earliest" => {}
+            "latest" => {
+                return Err(Error::unsupported("consumer latest-offset resolution"));
+            }
+            policy => {
+                return Err(Error::new(
+                    crate::error::ErrorKind::InvalidConfiguration,
+                    format!(
+                        "Unsupported auto_offset_reset policy '{policy}'; expected 'earliest' or 'latest'"
+                    ),
+                ));
+            }
+        }
+        if self.partitions.iter().any(|partition| *partition < 0) {
+            return Err(Error::new(
+                crate::error::ErrorKind::InvalidConfiguration,
+                "Consumer partitions must be non-negative",
+            ));
+        }
+
         Ok(Consumer::new(
             self.client_config,
             self.pool,
@@ -262,5 +362,133 @@ impl<K, V> ConsumerBuilder<K, V> {
             self.config,
             self.partitions,
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[cfg(feature = "sasl")]
+    use crate::config::SaslMechanism;
+    use crate::error::ErrorKind;
+
+    #[tokio::test]
+    async fn test_consumer_group_configuration_fails_closed() {
+        let client = Streamline::builder()
+            .bootstrap_servers("localhost:9092")
+            .build()
+            .await
+            .unwrap();
+
+        let error = client
+            .consumer::<Vec<u8>, Vec<u8>>("events")
+            .group_id("group")
+            .partitions(vec![0])
+            .build()
+            .await
+            .err()
+            .expect("consumer groups must be rejected");
+
+        assert_eq!(error.kind, ErrorKind::Unsupported);
+    }
+
+    #[tokio::test]
+    async fn test_latest_offset_configuration_fails_closed() {
+        let client = Streamline::builder()
+            .bootstrap_servers("localhost:9092")
+            .build()
+            .await
+            .unwrap();
+
+        let error = client
+            .consumer::<Vec<u8>, Vec<u8>>("events")
+            .auto_offset_reset("latest")
+            .partitions(vec![0])
+            .build()
+            .await
+            .err()
+            .expect("latest offsets must be rejected");
+
+        assert_eq!(error.kind, ErrorKind::Unsupported);
+    }
+
+    #[tokio::test]
+    async fn test_auto_commit_configuration_fails_closed() {
+        let client = Streamline::builder()
+            .bootstrap_servers("localhost:9092")
+            .build()
+            .await
+            .unwrap();
+
+        let error = client
+            .consumer::<Vec<u8>, Vec<u8>>("events")
+            .enable_auto_commit(true)
+            .partitions(vec![0])
+            .build()
+            .await
+            .err()
+            .expect("automatic commits must be rejected");
+
+        assert_eq!(error.kind, ErrorKind::Unsupported);
+    }
+
+    #[tokio::test]
+    async fn test_invalid_consumer_configuration_is_rejected() {
+        let client = Streamline::builder()
+            .bootstrap_servers("localhost:9092")
+            .build()
+            .await
+            .unwrap();
+
+        let policy_error = client
+            .consumer::<Vec<u8>, Vec<u8>>("events")
+            .auto_offset_reset("middle")
+            .partitions(vec![0])
+            .build()
+            .await
+            .err()
+            .expect("invalid reset policy must be rejected");
+        assert_eq!(policy_error.kind, ErrorKind::InvalidConfiguration);
+
+        let partition_error = client
+            .consumer::<Vec<u8>, Vec<u8>>("events")
+            .partitions(vec![-1])
+            .build()
+            .await
+            .err()
+            .expect("negative partitions must be rejected");
+        assert_eq!(partition_error.kind, ErrorKind::InvalidConfiguration);
+    }
+
+    #[cfg(feature = "tls")]
+    #[tokio::test]
+    async fn test_tls_configuration_fails_closed() {
+        let error = Streamline::builder()
+            .bootstrap_servers("localhost:9093")
+            .tls_config(TlsConfig::default())
+            .build()
+            .await
+            .err()
+            .expect("TLS must be rejected");
+
+        assert_eq!(error.kind, ErrorKind::Unsupported);
+    }
+
+    #[cfg(feature = "sasl")]
+    #[tokio::test]
+    async fn test_sasl_configuration_fails_closed() {
+        let error = Streamline::builder()
+            .bootstrap_servers("localhost:9092")
+            .sasl_config(SaslConfig {
+                mechanism: SaslMechanism::Plain,
+                username: "user".to_string(),
+                password: "password".to_string(),
+            })
+            .build()
+            .await
+            .err()
+            .expect("SASL must be rejected");
+
+        assert_eq!(error.kind, ErrorKind::Unsupported);
     }
 }

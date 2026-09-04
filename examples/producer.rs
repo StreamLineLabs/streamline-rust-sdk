@@ -6,12 +6,17 @@ use streamline_client::Streamline;
 async fn main() -> Result<(), streamline_client::Error> {
     // Create a client
     let client = Streamline::builder()
-        .bootstrap_servers(&std::env::var("STREAMLINE_BOOTSTRAP_SERVERS").unwrap_or_else(|_| "localhost:9092".into()))
+        .bootstrap_servers(
+            &std::env::var("STREAMLINE_BOOTSTRAP_SERVERS")
+                .unwrap_or_else(|_| "localhost:9092".into()),
+        )
         .build()
         .await?;
 
     // Produce a simple message
-    let metadata = client.produce("my-topic", "key-1", "Hello, Streamline!").await?;
+    let metadata = client
+        .produce("my-topic", "key-1", "Hello, Streamline!")
+        .await?;
     println!(
         "Produced to topic={}, partition={}, offset={}",
         metadata.topic, metadata.partition, metadata.offset

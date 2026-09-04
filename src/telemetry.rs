@@ -15,18 +15,40 @@
 //!
 //! # Example
 //!
-//! ```rust,ignore
-//! use streamline_client::telemetry;
+//! ```rust,no_run
+//! use std::time::Duration;
+//! use streamline_client::{telemetry, Headers, Streamline};
 //!
-//! // Trace a produce operation
-//! let metadata = telemetry::trace_produce("orders", || async {
-//!     producer.send("orders", "key", "value", Headers::new()).await
-//! }).await?;
+//! #[tokio::main]
+//! async fn main() -> Result<(), streamline_client::Error> {
+//!     let client = Streamline::builder()
+//!         .bootstrap_servers("localhost:9092")
+//!         .build()
+//!         .await?;
+//!     let producer = client.producer::<String, String>();
 //!
-//! // Trace a consume operation
-//! let records = telemetry::trace_consume("events", || async {
-//!     consumer.poll(Duration::from_millis(100)).await
-//! }).await?;
+//!     telemetry::trace_produce("orders", || {
+//!         producer.send(
+//!             "orders",
+//!             "key".to_string(),
+//!             "value".to_string(),
+//!             Headers::new(),
+//!         )
+//!     })
+//!     .await?;
+//!
+//!     let mut consumer = client
+//!         .consumer::<Vec<u8>, Vec<u8>>("events")
+//!         .partitions(vec![0])
+//!         .build()
+//!         .await?;
+//!     consumer.subscribe().await?;
+//!     let _records = telemetry::trace_consume("events", || {
+//!         consumer.poll(Duration::from_millis(100))
+//!     })
+//!     .await?;
+//!     Ok(())
+//! }
 //! ```
 
 #[cfg(feature = "telemetry")]
@@ -50,7 +72,6 @@ use tracing::Instrument;
 /// The result of the produce operation.
 #[cfg(feature = "telemetry")]
 pub async fn trace_produce<F, Fut, T>(topic: &str, f: F) -> T
-
 where
     F: FnOnce() -> Fut,
     Fut: std::future::Future<Output = T>,
@@ -302,26 +323,22 @@ mod tests {
     fn test_metrics_collector_new() {
         let m = MetricsCollector::new();
         assert_eq!(
-            m.messages_produced.load(std::sync::atomic::Ordering::Relaxed),
+            m.messages_produced
+                .load(std::sync::atomic::Ordering::Relaxed),
             0
         );
         assert_eq!(
-            m.messages_consumed.load(std::sync::atomic::Ordering::Relaxed),
+            m.messages_consumed
+                .load(std::sync::atomic::Ordering::Relaxed),
             0
         );
-        assert_eq!(
-            m.errors_total.load(std::sync::atomic::Ordering::Relaxed),
-            0
-        );
+        assert_eq!(m.errors_total.load(std::sync::atomic::Ordering::Relaxed), 0);
     }
 
     #[test]
     fn test_metrics_collector_default() {
         let m = MetricsCollector::default();
-        assert_eq!(
-            m.bytes_sent.load(std::sync::atomic::Ordering::Relaxed),
-            0
-        );
+        assert_eq!(m.bytes_sent.load(std::sync::atomic::Ordering::Relaxed), 0);
         assert_eq!(
             m.bytes_received.load(std::sync::atomic::Ordering::Relaxed),
             0
@@ -333,13 +350,11 @@ mod tests {
         let m = MetricsCollector::new();
         m.record_produce(256);
         assert_eq!(
-            m.messages_produced.load(std::sync::atomic::Ordering::Relaxed),
+            m.messages_produced
+                .load(std::sync::atomic::Ordering::Relaxed),
             1
         );
-        assert_eq!(
-            m.bytes_sent.load(std::sync::atomic::Ordering::Relaxed),
-            256
-        );
+        assert_eq!(m.bytes_sent.load(std::sync::atomic::Ordering::Relaxed), 256);
     }
 
     #[test]
@@ -347,7 +362,8 @@ mod tests {
         let m = MetricsCollector::new();
         m.record_consume(512);
         assert_eq!(
-            m.messages_consumed.load(std::sync::atomic::Ordering::Relaxed),
+            m.messages_consumed
+                .load(std::sync::atomic::Ordering::Relaxed),
             1
         );
         assert_eq!(
@@ -361,10 +377,7 @@ mod tests {
         let m = MetricsCollector::new();
         m.record_error();
         m.record_error();
-        assert_eq!(
-            m.errors_total.load(std::sync::atomic::Ordering::Relaxed),
-            2
-        );
+        assert_eq!(m.errors_total.load(std::sync::atomic::Ordering::Relaxed), 2);
     }
 
     #[test]
@@ -374,7 +387,8 @@ mod tests {
             m.record_produce(100);
         }
         assert_eq!(
-            m.messages_produced.load(std::sync::atomic::Ordering::Relaxed),
+            m.messages_produced
+                .load(std::sync::atomic::Ordering::Relaxed),
             10
         );
         assert_eq!(
@@ -383,7 +397,6 @@ mod tests {
         );
     }
 }
-
 
 /// Simple metrics collector for tracking SDK operations.
 #[derive(Debug, Default)]
@@ -403,18 +416,23 @@ impl MetricsCollector {
 
     /// Records a successful produce operation.
     pub fn record_produce(&self, bytes: u64) {
-        self.messages_produced.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        self.bytes_sent.fetch_add(bytes, std::sync::atomic::Ordering::Relaxed);
+        self.messages_produced
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.bytes_sent
+            .fetch_add(bytes, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Records a successful consume operation.
     pub fn record_consume(&self, bytes: u64) {
-        self.messages_consumed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        self.bytes_received.fetch_add(bytes, std::sync::atomic::Ordering::Relaxed);
+        self.messages_consumed
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.bytes_received
+            .fetch_add(bytes, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Records an error.
     pub fn record_error(&self) {
-        self.errors_total.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.errors_total
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 }

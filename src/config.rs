@@ -1,9 +1,10 @@
 //! Configuration types for the Streamline client.
 
+use std::fmt;
 use std::time::Duration;
 
 /// Client configuration.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct StreamlineConfig {
     /// Bootstrap servers
     pub bootstrap_servers: String,
@@ -21,6 +22,21 @@ pub struct StreamlineConfig {
     pub tls: Option<TlsConfig>,
     /// SASL configuration (used when security_protocol is SaslPlaintext or SaslSsl)
     pub sasl: Option<SaslConfig>,
+}
+
+impl fmt::Debug for StreamlineConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("StreamlineConfig")
+            .field("bootstrap_servers", &self.bootstrap_servers)
+            .field("http_endpoint", &self.http_endpoint)
+            .field("connection_pool_size", &self.connection_pool_size)
+            .field("connect_timeout", &self.connect_timeout)
+            .field("request_timeout", &self.request_timeout)
+            .field("security_protocol", &self.security_protocol)
+            .field("tls", &self.tls)
+            .field("sasl", &self.sasl)
+            .finish()
+    }
 }
 
 impl Default for StreamlineConfig {
@@ -61,19 +77,19 @@ impl StreamlineConfig {
 /// Producer configuration.
 #[derive(Debug, Clone)]
 pub struct ProducerConfig {
-    /// Batch size in bytes
+    /// Reserved batch size setting; automatic batching is not implemented in 0.4.0.
     pub batch_size: usize,
-    /// Linger time in milliseconds
+    /// Reserved linger setting; automatic batching is not implemented in 0.4.0.
     pub linger_ms: u64,
     /// Maximum request size
     pub max_request_size: usize,
-    /// Compression type (none, gzip, lz4, snappy, zstd)
+    /// Compression type. Only `none` is supported in 0.4.0.
     pub compression: String,
     /// Number of retries
     pub retries: u32,
     /// Retry backoff in milliseconds
     pub retry_backoff_ms: u64,
-    /// Enable idempotent producer
+    /// Requests idempotent production. Enabling it returns an unsupported error in 0.4.0.
     pub idempotent: bool,
 }
 
@@ -115,7 +131,7 @@ impl Default for ConsumerConfig {
         Self {
             group_id: None,
             auto_offset_reset: "earliest".to_string(),
-            enable_auto_commit: true,
+            enable_auto_commit: false,
             auto_commit_interval: Duration::from_secs(5),
             session_timeout: Duration::from_secs(30),
             heartbeat_interval: Duration::from_secs(3),
@@ -124,8 +140,10 @@ impl Default for ConsumerConfig {
     }
 }
 
-/// TLS configuration for secure connections.
-#[derive(Debug, Clone)]
+/// Reserved TLS configuration.
+///
+/// Broker TLS transport is not implemented in version 0.4.0.
+#[derive(Debug, Clone, Default)]
 pub struct TlsConfig {
     /// Path to CA certificate file (PEM format)
     pub ca_path: Option<String>,
@@ -137,17 +155,6 @@ pub struct TlsConfig {
     pub danger_skip_verify: bool,
 }
 
-impl Default for TlsConfig {
-    fn default() -> Self {
-        Self {
-            ca_path: None,
-            cert_path: None,
-            key_path: None,
-            danger_skip_verify: false,
-        }
-    }
-}
-
 /// SASL mechanism for authentication.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SaslMechanism {
@@ -156,8 +163,10 @@ pub enum SaslMechanism {
     ScramSha512,
 }
 
-/// SASL authentication configuration.
-#[derive(Debug, Clone)]
+/// Reserved SASL authentication configuration.
+///
+/// Broker SASL authentication is not implemented in version 0.4.0.
+#[derive(Clone)]
 pub struct SaslConfig {
     /// SASL mechanism
     pub mechanism: SaslMechanism,
@@ -165,6 +174,16 @@ pub struct SaslConfig {
     pub username: String,
     /// Password
     pub password: String,
+}
+
+impl fmt::Debug for SaslConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SaslConfig")
+            .field("mechanism", &self.mechanism)
+            .field("username", &"[REDACTED]")
+            .field("password", &"[REDACTED]")
+            .finish()
+    }
 }
 
 /// Security protocol for connections.
@@ -211,7 +230,7 @@ mod tests {
         let config = ConsumerConfig::default();
         assert!(config.group_id.is_none());
         assert_eq!(config.auto_offset_reset, "earliest");
-        assert!(config.enable_auto_commit);
+        assert!(!config.enable_auto_commit);
         assert_eq!(config.auto_commit_interval, Duration::from_secs(5));
         assert_eq!(config.session_timeout, Duration::from_secs(30));
         assert_eq!(config.heartbeat_interval, Duration::from_secs(3));
@@ -252,6 +271,42 @@ mod tests {
         let sasl = config.sasl.unwrap();
         assert_eq!(sasl.mechanism, SaslMechanism::ScramSha256);
         assert_eq!(sasl.username, "admin");
+    }
+
+    #[test]
+    fn test_sasl_config_debug_redacts_credentials() {
+        let config = SaslConfig {
+            mechanism: SaslMechanism::ScramSha512,
+            username: "unique-debug-username".to_string(),
+            password: "unique-debug-password".to_string(),
+        };
+
+        let debug = format!("{config:?}");
+
+        assert!(debug.contains("ScramSha512"));
+        assert!(debug.contains("[REDACTED]"));
+        assert!(!debug.contains("unique-debug-username"));
+        assert!(!debug.contains("unique-debug-password"));
+    }
+
+    #[test]
+    fn test_streamline_config_debug_redacts_sasl_credentials() {
+        let config = StreamlineConfig {
+            security_protocol: SecurityProtocol::SaslPlaintext,
+            sasl: Some(SaslConfig {
+                mechanism: SaslMechanism::Plain,
+                username: "nested-debug-username".to_string(),
+                password: "nested-debug-password".to_string(),
+            }),
+            ..Default::default()
+        };
+
+        let debug = format!("{config:?}");
+
+        assert!(debug.contains("SaslPlaintext"));
+        assert!(debug.contains("[REDACTED]"));
+        assert!(!debug.contains("nested-debug-username"));
+        assert!(!debug.contains("nested-debug-password"));
     }
 
     #[test]

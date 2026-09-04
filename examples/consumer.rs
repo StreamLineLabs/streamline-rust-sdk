@@ -7,15 +7,20 @@ use streamline_client::Streamline;
 async fn main() -> Result<(), streamline_client::Error> {
     // Create a client
     let client = Streamline::builder()
-        .bootstrap_servers(&std::env::var("STREAMLINE_BOOTSTRAP_SERVERS").unwrap_or_else(|_| "localhost:9092".into()))
+        .bootstrap_servers(
+            &std::env::var("STREAMLINE_BOOTSTRAP_SERVERS")
+                .unwrap_or_else(|_| "localhost:9092".into()),
+        )
         .build()
         .await?;
 
-    // Create a consumer with group ID
+    // Version 0.4.0 supports direct partition assignment only. Consumer
+    // groups, automatic commits, and latest-offset resolution fail closed.
     let mut consumer = client
         .consumer::<Vec<u8>, Vec<u8>>("my-topic")
-        .group_id("my-consumer-group")
+        .partitions(vec![0])
         .auto_offset_reset("earliest")
+        .enable_auto_commit(false)
         .max_poll_records(100)
         .build()
         .await?;
@@ -35,12 +40,11 @@ async fn main() -> Result<(), streamline_client::Error> {
         for record in &records {
             println!(
                 "Received: topic={}, partition={}, offset={}, key={:?}",
-                record.topic, record.partition, record.offset,
+                record.topic,
+                record.partition,
+                record.offset,
                 record.key.as_ref().map(|k| String::from_utf8_lossy(k))
             );
         }
-
-        // Commit offsets
-        consumer.commit().await?;
     }
 }
